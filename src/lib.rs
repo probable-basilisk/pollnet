@@ -112,6 +112,7 @@ impl PollnetContext {
         let thread = Some(thread::spawn(move || {
             let mut rt = runtime::Builder::new()
                     .basic_scheduler()
+                    .enable_all()
                     .build()
                     .expect("Unable to create the runtime");
 
@@ -121,9 +122,11 @@ impl PollnetContext {
                 .expect("Unable to give runtime handle to another thread");
 
             // Continue running until notified to shutdown
+            println!("Blocking hopefully?");
             rt.block_on(async {
                 shutdown_rx.await.unwrap();
             });
+            println!("Uh we somehow died?");
 
             //eprintln!("Runtime finished");
         }));
@@ -149,9 +152,12 @@ impl PollnetContext {
             println!("now running on a worker thread");
             let real_url = url::Url::parse(&url).unwrap();
 
+            println!("trying to connect");
             match connect_async(real_url).await {
                 Ok((mut ws_stream, _)) => {
+                    println!("got something this far?");
                     tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+                    println!("entering main loop?");
                     loop {
                         tokio::select! {
                             from_c_message = rx_to_sock.recv() => {
@@ -174,6 +180,7 @@ impl PollnetContext {
                     tx_from_sock.send(SocketMessage::Disconnect).expect("?????");
                 },
                 Err(err) => {
+                    println!("Connection error? {}", err);
                     tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("??????");
                 }
             }

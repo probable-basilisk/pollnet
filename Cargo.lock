@@ -1043,8 +1043,10 @@ checksum = "b8b8fe88007ebc363512449868d7da4389c9400072a3f666f212c7280082882a"
 dependencies = [
  "futures",
  "log",
+ "native-tls",
  "pin-project",
  "tokio",
+ "tokio-tls",
  "tungstenite",
 ]
 
