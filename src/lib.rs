@@ -77,7 +77,9 @@ impl PollnetSocket {
 
     fn send(&mut self, msg: String) {
         match self.status {
-            SocketStatus::OPEN => self.tx.try_send(SocketMessage::Message(msg)).unwrap_or_default(),
+            SocketStatus::OPEN | SocketStatus::OPENING => {
+                self.tx.try_send(SocketMessage::Message(msg)).unwrap_or_default()
+            },
             _ => (),
         };
     }
