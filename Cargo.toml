@@ -1,0 +1,20 @@
+[package]
+name = "pollnet"
+version = "0.1.0"
+authors = ["probable-basilisk <basilisk@mtknn.com>"]
+edition = "2018"
+
+[dependencies]
+tokio-tungstenite = "*"
+tungstenite = "*"
+futures = "*"
+url = "*"
+futures-util = "*"
+
+[dependencies.tokio]
+version = "*"
+features = ["sync", "macros"]
+
+[lib]
+name = "pollnet"
+crate-type = ["cdylib"]
