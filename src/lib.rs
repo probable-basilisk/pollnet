@@ -49,7 +49,7 @@ pub struct PollnetSocket {
 
 
 impl PollnetSocket {
-    fn update(&mut self) -> SocketResult {
+    fn _recv(&mut self) -> SocketResult {
         match self.rx.try_recv() {
             Ok(SocketMessage::Connect) => {
                 self.status = SocketStatus::OPEN;
@@ -71,6 +71,14 @@ impl PollnetSocket {
             _ => {
                 SocketResult::NODATA
             }
+        }
+    }
+
+    fn update(&mut self) -> SocketResult {
+        match self.status {
+            SocketStatus::OPEN | SocketStatus::OPENING => self._recv(),
+            SocketStatus::CLOSED => SocketResult::CLOSED,
+            _ => SocketResult::ERROR
         }
     }
 
@@ -123,13 +131,11 @@ impl PollnetContext {
                 .expect("Unable to give runtime handle to another thread");
 
             // Continue running until notified to shutdown
-            println!("Blocking hopefully?");
+            println!("Pollnet: tokio runtime starting");
             rt.block_on(async {
                 shutdown_rx.await.unwrap();
             });
-            println!("Uh we somehow died?");
-
-            //eprintln!("Runtime finished");
+            println!("Pollnet: runtime shutdown");
         }));
 
         PollnetContext{
@@ -150,39 +156,48 @@ impl PollnetContext {
 
         // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
-            println!("now running on a worker thread");
-            let real_url = url::Url::parse(&url).unwrap();
+            println!("Pollnet: WS task spawned");
+            let real_url = url::Url::parse(&url);
+            if let Err(url_err) = real_url {
+                tx_from_sock.send(SocketMessage::Error(url_err.to_string())).unwrap_or_default();
+                return;
+            }
 
-            println!("trying to connect");
-            match connect_async(real_url).await {
+            println!("Pollnet: attempting to connect");
+            match connect_async(real_url.unwrap()).await {
                 Ok((mut ws_stream, _)) => {
-                    println!("got something this far?");
                     tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
-                    println!("entering main loop?");
                     loop {
                         tokio::select! {
                             from_c_message = rx_to_sock.recv() => {
                                 match from_c_message {
                                     Some(SocketMessage::Message(msg)) => {
-                                        ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("???");
+                                        ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
                                     }
                                     _ => break
                                 }
                             },
                             from_sock_message = ws_stream.next() => {
-                                if let Some(Ok(msg)) = from_sock_message {
-                                    tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("????");
-                                } else {
-                                    break;
+                                match from_sock_message {
+                                    Some(Ok(msg)) => {
+                                        tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("TX error on socket message");
+                                    },
+                                    Some(Err(msg)) => {
+                                        tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                                        break;
+                                    },
+                                    None => {
+                                        break;
+                                    }
                                 }
                             },
                         };
                     }
-                    tx_from_sock.send(SocketMessage::Disconnect).expect("?????");
+                    tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
                 },
                 Err(err) => {
-                    println!("Connection error? {}", err);
-                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("??????");
+                    println!("Pollnet: connection error: {}", err);
+                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
                 }
             }
         });
