@@ -8,7 +8,6 @@ use futures::executor::block_on;
 use futures_util::{SinkExt, StreamExt};
 use std::os::raw::c_char;
 use std::ffi::CStr;
-use irc::client::prelude::*; // eh?
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -200,60 +199,6 @@ impl PollnetContext {
         new_handle
     }
 
-    fn open_irc_toml_config(&mut self, config_fn: String) -> u32 {
-        let new_handle = self.next_handle;
-        self.next_handle += 1;
-
-        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
-        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
-
-        // Spawn a future onto the runtime
-        self.rt_handle.spawn(async move {
-            println!("now running on a worker thread");
-            // configuration is loaded from config.toml into a Config
-            if let Ok(mut client) = Client::new(config_fn).await {
-                // identify comes from ClientExt
-                client.identify().unwrap();
-                let mut stream = client.stream().unwrap();
-                tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
-                loop {
-                    tokio::select! {
-                        from_c_message = rx_to_sock.recv() => {
-                            match from_c_message {
-                                Some(SocketMessage::Message(msg)) => {
-                                    //ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("???");
-                                    println!("NIY! TODO: figure out how to deal w/ channels in IRC")
-                                }
-                                _ => break
-                            }
-                        },
-                        from_sock_message = stream.next() => {
-                            if let Some(Ok(msg)) = from_sock_message {
-                                tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("????");
-                            } else {
-                                break;
-                            }
-                        },
-                    };
-                }
-                tx_from_sock.send(SocketMessage::Disconnect).expect("?????");
-            } else {
-                tx_from_sock.send(SocketMessage::Error("Unable to open client?".to_string())).unwrap();
-            }
-        });
-
-        let socket = Box::new(PollnetSocket{
-            tx: tx_to_sock,
-            rx: rx_from_sock,
-            status: SocketStatus::OPENING,
-            message: None,
-            error: None
-        });
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
-    }
-
     fn close(&mut self, handle: u32) {
         if let Some(sock) = self.sockets.get_mut(&handle) {
             //block_on(sock.tx.send(SocketMessage::Disconnect)).unwrap_or_default();
@@ -294,13 +239,6 @@ pub extern fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u
     let url = unsafe { CStr::from_ptr(url).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
     ctx.open_ws(url)
-}
-
-#[no_mangle]
-pub extern fn pollnet_open_irc_file_config(ctx: *mut PollnetContext, filename: *const c_char) -> u32 {
-    let filename = unsafe { CStr::from_ptr(filename).to_string_lossy().into_owned() };
-    let ctx = unsafe{&mut *ctx};
-    ctx.open_irc_toml_config(filename)
 }
 
 #[no_mangle]

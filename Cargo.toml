@@ -10,7 +10,6 @@ tungstenite = {version = "*", features = ["tls"]}
 futures = "*"
 url = "*"
 futures-util = "*"
-irc = "0.14"
 
 [dependencies.tokio]
 version = "*"
