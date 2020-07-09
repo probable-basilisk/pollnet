@@ -2,8 +2,11 @@ extern crate url;
 
 use std::collections::HashMap;
 use std::thread;
+use std::net::SocketAddr;
+use tokio::net::{TcpListener, TcpStream};
+//use tokio::net::tcp::stream; // hmm why is this private????
 use tokio::runtime; // 0.1.15
-use tokio_tungstenite::{connect_async};
+use tokio_tungstenite::{connect_async, accept_async};
 use futures::executor::block_on;
 use futures_util::{SinkExt, StreamExt};
 use std::os::raw::c_char;
@@ -18,6 +21,7 @@ pub enum SocketResult {
     NODATA,
     HASDATA,
     ERROR,
+    NEWCLIENT,
 }
 
 #[repr(C)]
@@ -31,11 +35,19 @@ pub enum SocketStatus {
 }
 
 
+struct ClientConn {
+    tx: tokio::sync::mpsc::Sender<SocketMessage>, 
+    rx: std::sync::mpsc::Receiver<SocketMessage>, 
+    id: String,
+}
+
+
 enum SocketMessage {
     Connect,
     Disconnect,
     Message(String),
-    Error(String)
+    Error(String),
+    NewClient(ClientConn),
 }
 
 
@@ -44,64 +56,8 @@ pub struct PollnetSocket {
     tx: tokio::sync::mpsc::Sender<SocketMessage>,
     rx: std::sync::mpsc::Receiver<SocketMessage>,
     message: Option<String>,
-    error: Option<String>
-}
-
-
-impl PollnetSocket {
-    fn _recv(&mut self) -> SocketResult {
-        match self.rx.try_recv() {
-            Ok(SocketMessage::Connect) => {
-                self.status = SocketStatus::OPEN;
-                SocketResult::OPENING
-            },
-            Ok(SocketMessage::Disconnect) => {
-                self.status = SocketStatus::CLOSED;
-                SocketResult::CLOSED
-            },
-            Ok(SocketMessage::Message(msg)) => {
-                self.message = Some(msg);
-                SocketResult::HASDATA
-            },
-            Ok(SocketMessage::Error(err)) => {
-                self.error = Some(err);
-                self.status = SocketStatus::ERROR;
-                SocketResult::ERROR
-            },
-            _ => {
-                SocketResult::NODATA
-            }
-        }
-    }
-
-    fn update(&mut self) -> SocketResult {
-        match self.status {
-            SocketStatus::OPEN | SocketStatus::OPENING => self._recv(),
-            SocketStatus::CLOSED => SocketResult::CLOSED,
-            _ => SocketResult::ERROR
-        }
-    }
-
-    fn send(&mut self, msg: String) {
-        match self.status {
-            SocketStatus::OPEN | SocketStatus::OPENING => {
-                self.tx.try_send(SocketMessage::Message(msg)).unwrap_or_default()
-            },
-            _ => (),
-        };
-    }
-
-    fn close(&mut self) {
-        match self.status {
-            SocketStatus::OPEN | SocketStatus::OPENING => {
-                match block_on(self.tx.send(SocketMessage::Disconnect)) {
-                    _ => ()
-                }
-                self.status = SocketStatus::CLOSED;
-            },
-            _ => (),
-        }
-    }
+    error: Option<String>,
+    last_client_handle: u32,
 }
 
 pub struct PollnetContext {
@@ -110,6 +66,54 @@ pub struct PollnetContext {
     thread: Option<thread::JoinHandle<()>>,
     rt_handle: tokio::runtime::Handle,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
+}
+
+async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::sync::mpsc::Sender<SocketMessage>) {//rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
+    let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+    let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+    outer_tx.send(SocketMessage::NewClient(ClientConn{
+        tx: tx_to_sock,
+        rx: rx_from_sock,
+        id: addr.to_string(), //"BLURGH".to_string(),
+    })).expect("this shouldn't ever break?");
+
+    match accept_async(tcp_stream).await {
+        Ok(mut ws_stream) => {
+            tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+            loop {
+                tokio::select! {
+                    from_c_message = rx_to_sock.recv() => {
+                        match from_c_message {
+                            Some(SocketMessage::Message(msg)) => {
+                                ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
+                            }
+                            _ => break
+                        }
+                    },
+                    from_sock_message = ws_stream.next() => {
+                        match from_sock_message {
+                            Some(Ok(msg)) => {
+                                tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("TX error on socket message");
+                            },
+                            Some(Err(msg)) => {
+                                tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                                break;
+                            },
+                            None => {
+                                break;
+                            }
+                        }
+                    },
+                };
+            }
+            tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+        },
+        Err(err) => {
+            println!("Pollnet: connection error: {}", err);
+            tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
+        }
+    }
 }
 
 impl PollnetContext {
@@ -139,7 +143,7 @@ impl PollnetContext {
         }));
 
         PollnetContext{
-            next_handle: 0,
+            next_handle: 1,
             rt_handle: handle_rx.recv().unwrap(),
             thread: thread,
             shutdown_tx: shutdown_tx,
@@ -147,10 +151,67 @@ impl PollnetContext {
         }
     }
 
-    fn open_ws(&mut self, url: String) -> u32 {
+    fn _next_handle(&mut self) -> u32 {
         let new_handle = self.next_handle;
         self.next_handle += 1;
+        new_handle
+    }
 
+    fn listen_ws(&mut self, addr: String) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        // Spawn a future onto the runtime
+        self.rt_handle.spawn(async move {
+            println!("Pollnet: WS server task spawned");
+            //let real_url = url::Url::parse(&url);
+            let listener = TcpListener::bind(&addr).await;
+            if let Err(tcp_err) = listener {
+                tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
+                return;
+            }
+            let mut listener = listener.unwrap();
+            println!("Pollnet: waiting for connections");
+            tx_from_sock.send(SocketMessage::Connect).expect("oh boy");                    
+            loop {
+                tokio::select! {
+                    from_c_message = rx_to_sock.recv() => {
+                        match from_c_message {
+                            Some(SocketMessage::Message(_msg)) => {}, // server socket ignores sends
+                            _ => break
+                        }
+                    },
+                    new_client = listener.accept() => {
+                        match new_client {
+                            Ok((tcp_stream, addr)) => {
+                                tokio::spawn(accept_stream(tcp_stream, addr, tx_from_sock.clone()));
+                            },
+                            Err(msg) => {
+                                tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                                break;
+                            }
+                        }
+                    },
+                };
+            }
+            tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
+        new_handle
+    }
+
+    fn open_ws(&mut self, url: String) -> u32 {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -207,8 +268,10 @@ impl PollnetContext {
             rx: rx_from_sock,
             status: SocketStatus::OPENING,
             message: None,
-            error: None
+            error: None,
+            last_client_handle: 0
         });
+        let new_handle = self._next_handle();
         self.sockets.insert(new_handle, socket);
 
         new_handle
@@ -216,11 +279,82 @@ impl PollnetContext {
 
     fn close(&mut self, handle: u32) {
         if let Some(sock) = self.sockets.get_mut(&handle) {
-            //block_on(sock.tx.send(SocketMessage::Disconnect)).unwrap_or_default();
-            sock.close();
+            match sock.status {
+                SocketStatus::OPEN | SocketStatus::OPENING => {
+                    match block_on(sock.tx.send(SocketMessage::Disconnect)) {
+                        _ => ()
+                    }
+                    sock.status = SocketStatus::CLOSED;
+                },
+                _ => (),
+            }
             self.sockets.remove(&handle);
         }
     }
+
+    fn send(&mut self, handle: u32, msg: String) {
+        if let Some(sock) = self.sockets.get_mut(&handle) {
+            match sock.status {
+                SocketStatus::OPEN | SocketStatus::OPENING => {
+                    sock.tx.try_send(SocketMessage::Message(msg)).unwrap_or_default()
+                },
+                _ => (),
+            };
+        }
+    }
+
+    fn update(&mut self, handle: u32) -> SocketResult {
+        let sock = self.sockets.get_mut(&handle).unwrap();
+
+        match sock.status {
+            SocketStatus::OPEN | SocketStatus::OPENING => {
+                // This block is apparently impossible to move into a helper function
+                // for borrow checker "reasons"
+                match sock.rx.try_recv() {
+                    Ok(SocketMessage::Connect) => {
+                        sock.status = SocketStatus::OPEN;
+                        SocketResult::OPENING
+                    },
+                    Ok(SocketMessage::Disconnect) => {
+                        sock.status = SocketStatus::CLOSED;
+                        SocketResult::CLOSED
+                    },
+                    Ok(SocketMessage::Message(msg)) => {
+                        sock.message = Some(msg);
+                        SocketResult::HASDATA
+                    },
+                    Ok(SocketMessage::Error(err)) => {
+                        sock.error = Some(err);
+                        sock.status = SocketStatus::ERROR;
+                        SocketResult::ERROR
+                    },
+                    Ok(SocketMessage::NewClient(conn)) => {
+                        // can't use self._next_handle() either for questionable reasons
+                        let new_handle = self.next_handle;
+                        self.next_handle += 1;
+                        sock.last_client_handle = new_handle;
+                        sock.message = Some(conn.id);
+                        let client_socket = Box::new(PollnetSocket{
+                            tx: conn.tx,
+                            rx: conn.rx,
+                            status: SocketStatus::OPEN, // assume client sockets start open?
+                            message: None,
+                            error: None,
+                            last_client_handle: 0,
+                        });
+                        self.sockets.insert(new_handle, client_socket);
+                        SocketResult::NEWCLIENT
+                    },
+                    _ => {
+                        SocketResult::NODATA
+                    }
+                }
+            },
+            SocketStatus::CLOSED => SocketResult::CLOSED,
+            _ => SocketResult::ERROR
+        }
+    }
+
 
     fn shutdown(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
@@ -257,6 +391,13 @@ pub extern fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u
 }
 
 #[no_mangle]
+pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
+    let ctx = unsafe{&mut *ctx};
+    ctx.listen_ws(addr)
+}
+
+#[no_mangle]
 pub extern fn pollnet_close(ctx: *mut PollnetContext, handle: u32) {
     let ctx = unsafe{&mut *ctx};
     ctx.close(handle)
@@ -276,19 +417,13 @@ pub extern fn pollnet_status(ctx: *mut PollnetContext, handle: u32) -> SocketSta
 pub extern fn pollnet_send(ctx: *mut PollnetContext, handle: u32, msg: *const c_char) {
     let ctx = unsafe{&mut *ctx};
     let msg = unsafe { CStr::from_ptr(msg).to_string_lossy().into_owned() };
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        socket.send(msg)
-    }
+    ctx.send(handle, msg)
 }
 
 #[no_mangle]
 pub extern fn pollnet_update(ctx: *mut PollnetContext, handle: u32) -> SocketResult {
     let ctx = unsafe{&mut *ctx};
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        socket.update()
-    } else {
-        SocketResult::INVALIDHANDLE
-    }
+    ctx.update(handle)
 }
 
 #[no_mangle]
@@ -311,6 +446,16 @@ pub extern fn pollnet_get(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, 
         }
     } else {
         -1
+    }
+}
+
+#[no_mangle]
+pub extern fn pollnet_get_connected_client_handle(ctx: *mut PollnetContext, handle: u32) -> u32 {
+    let ctx = unsafe{&mut *ctx};
+    if let Some(socket) = ctx.sockets.get_mut(&handle) {
+        socket.last_client_handle
+    } else {
+        0
     }
 }
 
