@@ -8,9 +8,17 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime; // 0.1.15
 use tokio_tungstenite::{connect_async, accept_async};
 use futures::executor::block_on;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future};
 use std::os::raw::c_char;
 use std::ffi::CStr;
+
+// use http::response::Builder as ResponseBuilder;
+// use http::{header, StatusCode};
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Request, Response};
+use hyper_staticfile::Static;
+use std::io::Error as IoError;
+use std::path::Path;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -116,6 +124,10 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
     }
 }
 
+async fn handle_http_request<B>(req: Request<B>, static_: Static) -> Result<Response<Body>, IoError> {
+    static_.clone().serve(req).await
+}
+
 impl PollnetContext {
     fn new() -> PollnetContext {
         let (handle_tx, handle_rx) = std::sync::mpsc::channel();
@@ -154,6 +166,60 @@ impl PollnetContext {
     fn _next_handle(&mut self) -> u32 {
         let new_handle = self.next_handle;
         self.next_handle += 1;
+        new_handle
+    }
+
+    fn serve_static_http(&mut self, bind_addr: String, serve_dir: String) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        // Spawn a future onto the runtime
+        self.rt_handle.spawn(async move {
+            println!("Pollnet: HTTP server task spawned");
+            let addr = bind_addr.parse();
+            if let Err(_) = addr {
+                tx_from_sock.send(SocketMessage::Error("Invalid TCP address".to_string())).unwrap_or_default();
+                return;
+            }
+            let addr = addr.unwrap();
+
+            let static_ = Static::new(Path::new(&serve_dir));
+
+            let make_service = make_service_fn(|_| {
+                let static_ = static_.clone();
+                future::ok::<_, hyper::Error>(service_fn(move |req| handle_http_request(req, static_.clone())))
+            });
+
+            let server = hyper::Server::bind(&addr).serve(make_service);
+            let graceful = server.with_graceful_shutdown(async move {
+                loop {
+                    match rx_to_sock.recv().await {
+                        Some(SocketMessage::Disconnect) | Some(SocketMessage::Error(_)) | None => {
+                            break
+                        }
+                        _ => {} // ignore sends?
+                    }
+                }
+                println!("Server trying to gracefully exit?");
+            });
+            println!("Static server running on http://{}/, serving {}", addr, serve_dir);
+            
+            graceful.await.expect("Server failed");
+
+            tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
         new_handle
     }
 
@@ -395,6 +461,15 @@ pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -
     let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
     ctx.listen_ws(addr)
+}
+
+
+#[no_mangle]
+pub extern fn pollnet_serve_static_http(ctx: *mut PollnetContext, addr: *const c_char, serve_dir: *const c_char) -> u32 {
+    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
+    let serve_dir = unsafe { CStr::from_ptr(serve_dir).to_string_lossy().into_owned() };
+    let ctx = unsafe{&mut *ctx};
+    ctx.serve_static_http(addr, serve_dir)
 }
 
 #[no_mangle]

@@ -10,6 +10,9 @@ tungstenite = {version = "*", features = ["tls"]}
 futures = "*"
 url = "*"
 futures-util = "*"
+hyper = "0.13.6"
+hyper-staticfile = "0.5.3"
+http = "0.2"
 
 [dependencies.tokio]
 version = "*"
