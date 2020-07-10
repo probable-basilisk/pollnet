@@ -38,6 +38,9 @@ void pollnet_send(struct pnctx* ctx, unsigned int handle, const char* msg);
 unsigned int pollnet_update(struct pnctx* ctx, unsigned int handle);
 int pollnet_get(struct pnctx* ctx, unsigned int handle, char* dest, unsigned int dest_size);
 int pollnet_get_error(struct pnctx* ctx, unsigned int handle, char* dest, unsigned int dest_size);
+unsigned int pollnet_get_connected_client_handle(struct pnctx* ctx, unsigned int handle);
+unsigned int pollnet_listen_ws(struct pnctx* ctx, const char* addr);
+unsigned int pollnet_serve_static_http(struct pnctx* ctx, const char* addr, const char* serve_dir);
 ]]
 
 local POLLNET_RESULT_CODES = {
@@ -47,6 +50,7 @@ local POLLNET_RESULT_CODES = {
   [3] = "nodata",
   [4] = "hasdata",
   [5] = "error",
+  [6] = "newclient"
 }
 
 local pollnet = ffi.load("pollnet")
@@ -65,18 +69,49 @@ local function shutdown_ctx()
 end
 
 local socket_mt = {}
+local function Socket()
+  return setmetatable({}, {__index = socket_mt})
+end
+
 function socket_mt:_open(scratch_size, opener, ...)
   init_ctx()
   if self._socket then self:close() end
   if not scratch_size then scratch_size = 64000 end
-  self._socket = opener(_ctx, ...) --pollnet.pollnet_open(url)
+  if type(opener) == "number" then
+    self._socket = opener
+  else
+    self._socket = opener(_ctx, ...)
+  end
   self._scratch = ffi.new("int8_t[?]", scratch_size)
   self._scratch_size = scratch_size
   self._status = "unpolled"
+  return self
 end
 
 function socket_mt:open_ws(url, scratch_size)
-  self:_open(scratch_size, pollnet.pollnet_open_ws, url)
+  return self:_open(scratch_size, pollnet.pollnet_open_ws, url)
+end
+
+function socket_mt:serve_http(addr, dir, scratch_size)
+  return self:_open(scratch_size, pollnet.pollnet_serve_static_http, addr, dir)
+end
+
+function socket_mt:listen_ws(addr, scratch_size)
+  return self:_open(scratch_size, pollnet.pollnet_listen_ws, addr)
+end
+
+function socket_mt:on_connection(f)
+  self._on_connection = f
+  return self
+end
+
+function socket_mt:_get_message()
+  local msg_size = pollnet.pollnet_get(_ctx, self._socket, self._scratch, self._scratch_size)
+  if msg_size > 0 then
+    return ffi.string(self._scratch, msg_size)
+  else
+    return nil
+  end
 end
 
 function socket_mt:poll()
@@ -89,10 +124,7 @@ function socket_mt:poll()
   self._last_message = nil
   if res == "hasdata" then
     self._status = "open"
-    local msg_size = pollnet.pollnet_get(_ctx, self._socket, self._scratch, self._scratch_size)
-    if msg_size > 0 then
-      self._last_message = ffi.string(self._scratch, msg_size)
-    end
+    self._last_message = self:_get_message()
     return true, self._last_message
   elseif res == "nodata" then
     self._status = "open"
@@ -106,6 +138,20 @@ function socket_mt:poll()
     return false, self._last_message
   elseif res == "closed" then
     return false, "closed"
+  elseif res == "newclient" then
+    local client_addr = self:_get_message()
+    local client_handle = pollnet.pollnet_get_connected_client_handle(_ctx, self._socket)
+    assert(client_handle > 0)
+    local client_sock = Socket():_open(self._scratch_size, client_handle)
+    client_sock.parent = self
+    client_sock.remote_addr = client_addr
+    if self._on_connection then
+      self._on_connection(client_sock, client_addr)
+    else
+      print("No connection handler! All incoming connections will be closed!")
+      client_sock:close()
+    end
+    return true
   end
 end
 
@@ -136,9 +182,23 @@ function socket_mt:error_msg()
 end
 
 local function open_ws(url, scratch_size)
-  local socket = setmetatable({}, {__index = socket_mt})
-  socket:open_ws(url, scratch_size)
-  return socket
+  return Socket():open_ws(url, scratch_size)
 end
 
-return {init = init_ctx, shutdown = shutdown_ctx, open_ws = open_ws, pollnet = pollnet}
+local function listen_ws(addr, scratch_size)
+  return Socket():listen_ws(addr, scratch_size)
+end
+
+local function serve_http(addr, dir, scratch_size)
+  return Socket():serve_http(addr, dir, scratch_size)
+end
+
+return {
+  init = init_ctx, 
+  shutdown = shutdown_ctx, 
+  open_ws = open_ws, 
+  listen_ws = listen_ws,
+  serve_http = serve_http,
+  Socket = Socket,
+  pollnet = pollnet,
+}
