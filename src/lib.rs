@@ -1,6 +1,8 @@
 extern crate url;
 
 use std::collections::HashMap;
+use std::sync::RwLock;
+use std::sync::Arc;
 use std::thread;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
@@ -126,7 +128,7 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
     }
 }
 
-async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>) -> Result<Response<Body>, IoError> {
+async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>) -> Result<Response<Body>, IoError> {
     match static_ {
         Some(static_) => static_.clone().serve(req).await,
         None => {
@@ -195,13 +197,21 @@ impl PollnetContext {
                 None => None
             };
 
+            let virtual_files: HashMap<String, Vec<u8>> = HashMap::new();
+            let virtual_files = Arc::new(RwLock::new(virtual_files));
+            let virtual_files_two_the_clone_wars = virtual_files.clone();
+
             let make_service = make_service_fn(|_| {
+                // Rust demands all these clones for reasons I don't fully understand
+                // I definitely feel so much safer though!
                 let static_ = static_.clone();
-                future::ok::<_, hyper::Error>(service_fn(move |req| handle_http_request(req, static_.clone())))
+                let virtual_files = virtual_files.clone();
+                future::ok::<_, hyper::Error>(service_fn(move |req| handle_http_request(req, static_.clone(), virtual_files.clone())))
             });
 
             let server = hyper::Server::bind(&addr).serve(make_service);
             let graceful = server.with_graceful_shutdown(async move {
+                let virtual_files = virtual_files_two_the_clone_wars.clone();
                 loop {
                     match rx_to_sock.recv().await {
                         Some(SocketMessage::Disconnect) | Some(SocketMessage::Error(_)) | None => {
