@@ -56,6 +56,8 @@ enum SocketMessage {
     Message(String),
     Error(String),
     NewClient(ClientConn),
+    FileAdd(String, Vec<u8>),
+    FileRemove(String),
 }
 
 
@@ -124,8 +126,13 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
     }
 }
 
-async fn handle_http_request<B>(req: Request<B>, static_: Static) -> Result<Response<Body>, IoError> {
-    static_.clone().serve(req).await
+async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>) -> Result<Response<Body>, IoError> {
+    match static_ {
+        Some(static_) => static_.clone().serve(req).await,
+        None => {
+            Response::builder().status(http::StatusCode::NOT_FOUND).body(Body::empty()).map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain"))
+        }
+    }
 }
 
 impl PollnetContext {
@@ -169,7 +176,7 @@ impl PollnetContext {
         new_handle
     }
 
-    fn serve_static_http(&mut self, bind_addr: String, serve_dir: String) -> u32 {
+    fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> u32 {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -183,7 +190,10 @@ impl PollnetContext {
             }
             let addr = addr.unwrap();
 
-            let static_ = Static::new(Path::new(&serve_dir));
+            let static_ = match serve_dir {
+                Some(path_string) => Some(Static::new(Path::new(&path_string))),
+                None => None
+            };
 
             let make_service = make_service_fn(|_| {
                 let static_ = static_.clone();
@@ -196,13 +206,19 @@ impl PollnetContext {
                     match rx_to_sock.recv().await {
                         Some(SocketMessage::Disconnect) | Some(SocketMessage::Error(_)) | None => {
                             break
-                        }
+                        },
+                        Some(SocketMessage::FileAdd(filename, filedata)) => {
+
+                        },
+                        Some(SocketMessage::FileRemove(filename)) => {
+
+                        },
                         _ => {} // ignore sends?
                     }
                 }
                 println!("Server trying to gracefully exit?");
             });
-            println!("Static server running on http://{}/, serving {}", addr, serve_dir);
+            println!("Static server running on http://{}/", addr);
             
             graceful.await.expect("Server failed");
 
@@ -469,7 +485,14 @@ pub extern fn pollnet_serve_static_http(ctx: *mut PollnetContext, addr: *const c
     let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let serve_dir = unsafe { CStr::from_ptr(serve_dir).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
-    ctx.serve_static_http(addr, serve_dir)
+    ctx.serve_http(addr, Some(serve_dir))
+}
+
+#[no_mangle]
+pub extern fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
+    let ctx = unsafe{&mut *ctx};
+    ctx.serve_http(addr, None)
 }
 
 #[no_mangle]
