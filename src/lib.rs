@@ -129,6 +129,17 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
 }
 
 async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>) -> Result<Response<Body>, IoError> {
+    {
+        // Do we need like... more headers???
+        let vfiles = virtual_files.read().expect("RwLock poisoned");
+        if let Some(file_data) = vfiles.get(&req.uri().to_string()) {
+            return Response::builder()
+                    .status(http::StatusCode::OK)
+                    .body(Body::from(file_data.clone()))
+                    .map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain"))
+        }
+    }
+
     match static_ {
         Some(static_) => static_.clone().serve(req).await,
         None => {
@@ -160,6 +171,7 @@ impl PollnetContext {
             rt.block_on(async {
                 shutdown_rx.await.unwrap();
             });
+            rt.shutdown_timeout(std::time::Duration::from_millis(200));
             println!("Pollnet: runtime shutdown");
         }));
 
@@ -218,10 +230,12 @@ impl PollnetContext {
                             break
                         },
                         Some(SocketMessage::FileAdd(filename, filedata)) => {
-
+                            let mut vfiles = virtual_files.write().expect("Lock is poisoned");
+                            vfiles.insert(filename, filedata);
                         },
                         Some(SocketMessage::FileRemove(filename)) => {
-
+                            let mut vfiles = virtual_files.write().expect("Lock is poisoned");
+                            vfiles.remove(&filename);
                         },
                         _ => {} // ignore sends?
                     }
@@ -286,7 +300,7 @@ impl PollnetContext {
                     },
                 };
             }
-            tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+            //tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
         });
 
         let socket = Box::new(PollnetSocket{
@@ -340,13 +354,15 @@ impl PollnetContext {
                                         break;
                                     },
                                     None => {
+                                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
                                         break;
                                     }
                                 }
                             },
                         };
                     }
-                    tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+                    println!("Pollnet: closing socket!");
+                    ws_stream.close(None).await.unwrap_or_default(); // if this errors we don't care
                 },
                 Err(err) => {
                     println!("Pollnet: connection error: {}", err);
@@ -369,6 +385,19 @@ impl PollnetContext {
         new_handle
     }
 
+    fn close_all(&mut self) {
+        for (_, sock) in self.sockets.iter_mut() {
+            match sock.status {
+                SocketStatus::OPEN | SocketStatus::OPENING => {
+                    // don't care about errors at this point
+                    block_on(sock.tx.send(SocketMessage::Disconnect)).unwrap_or_default();
+                    sock.status = SocketStatus::CLOSED;
+                },
+                _ => (),
+            }
+        }
+    }
+
     fn close(&mut self, handle: u32) {
         if let Some(sock) = self.sockets.get_mut(&handle) {
             match sock.status {
@@ -380,6 +409,8 @@ impl PollnetContext {
                 },
                 _ => (),
             }
+            // Note: since we don't wait here for any kind of "disconnect" reply,
+            // a socket that has been closed should just return without sending a reply
             self.sockets.remove(&handle);
         }
     }
@@ -407,7 +438,7 @@ impl PollnetContext {
                         sock.status = SocketStatus::OPEN;
                         SocketResult::OPENING
                     },
-                    Ok(SocketMessage::Disconnect) => {
+                    Ok(SocketMessage::Disconnect) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         sock.status = SocketStatus::CLOSED;
                         SocketResult::CLOSED
                     },
@@ -437,9 +468,8 @@ impl PollnetContext {
                         self.sockets.insert(new_handle, client_socket);
                         SocketResult::NEWCLIENT
                     },
-                    _ => {
-                        SocketResult::NODATA
-                    }
+                    Ok(_) => SocketResult::NODATA,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => SocketResult::NODATA,
                 }
             },
             SocketStatus::CLOSED => SocketResult::CLOSED,
@@ -449,12 +479,16 @@ impl PollnetContext {
 
 
     fn shutdown(&mut self) {
+        println!("Pollnet: starting shutdown");
+        self.close_all();
+        println!("Pollnet: all sockets should be closed?");
         if let Some(tx) = self.shutdown_tx.take() {
             tx.send(0).unwrap_or_default();
         }
         if let Some(handle) = self.thread.take() {
             handle.join().unwrap_or_default();
         }
+        println!("Pollnet: thread should be joined?");
     }
 }
 
@@ -466,12 +500,14 @@ pub extern fn pollnet_init() -> *mut PollnetContext {
 
 #[no_mangle]
 pub extern fn pollnet_shutdown(ctx: *mut PollnetContext) {
+    println!("Pollnet: requested ctx close!");
     let ctx = unsafe{&mut *ctx};
     ctx.shutdown();
 
     // take ownership and drop
     let b = unsafe{ Box::from_raw(ctx) };
     drop(b);
+    println!("Pollnet: Everything should be dead now!");
 }
 
 
@@ -509,6 +545,12 @@ pub extern fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) 
 pub extern fn pollnet_close(ctx: *mut PollnetContext, handle: u32) {
     let ctx = unsafe{&mut *ctx};
     ctx.close(handle)
+}
+
+#[no_mangle]
+pub extern fn pollnet_close_all(ctx: *mut PollnetContext) {
+    let ctx = unsafe{&mut *ctx};
+    ctx.close_all()
 }
 
 #[no_mangle]
