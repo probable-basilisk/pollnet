@@ -41,6 +41,9 @@ int pollnet_get_error(struct pnctx* ctx, unsigned int handle, char* dest, unsign
 unsigned int pollnet_get_connected_client_handle(struct pnctx* ctx, unsigned int handle);
 unsigned int pollnet_listen_ws(struct pnctx* ctx, const char* addr);
 unsigned int pollnet_serve_static_http(struct pnctx* ctx, const char* addr, const char* serve_dir);
+unsigned int pollnet_serve_http(struct pnctx* ctx, const char* addr);
+void pollnet_add_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename, const char* filedata, unsigned int filesize);
+void pollnet_remove_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename)
 ]]
 
 local POLLNET_RESULT_CODES = {
@@ -93,7 +96,22 @@ function socket_mt:open_ws(url, scratch_size)
 end
 
 function socket_mt:serve_http(addr, dir, scratch_size)
-  return self:_open(scratch_size, pollnet.pollnet_serve_static_http, addr, dir)
+  self.is_http_server = true
+  if dir and dir ~= "" then
+    return self:_open(scratch_size, pollnet.pollnet_serve_static_http, addr, dir)
+  else
+    return self:_open(scratch_size, pollnet.pollnet_serve_http, addr)
+  end
+end
+
+function socket_mt:add_virtual_file(filename, filedata)
+  assert(filedata)
+  local dsize = #filedata
+  pollnet.pollnet_add_virtual_file(_ctx, self._socket, filename, filedata, dsize)
+end
+
+function socket_mt:remove_virtual_file(filename)
+  pollnet.pollnet_remove_virtual_file(_ctx, self._socket, filename)
 end
 
 function socket_mt:listen_ws(addr, scratch_size)
