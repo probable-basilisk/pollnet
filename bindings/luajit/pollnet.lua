@@ -31,9 +31,11 @@ end)
 local ffi = require("ffi")
 ffi.cdef[[
 struct pnctx* pollnet_init();
+struct pnctx* pollnet_get_or_init_static();
 void pollnet_shutdown(struct pnctx* ctx);
 unsigned int pollnet_open_ws(struct pnctx* ctx, const char* url);
 void pollnet_close(struct pnctx* ctx, unsigned int handle);
+void pollnet_close_all(struct pnctx* ctx);
 void pollnet_send(struct pnctx* ctx, unsigned int handle, const char* msg);
 unsigned int pollnet_update(struct pnctx* ctx, unsigned int handle);
 int pollnet_get(struct pnctx* ctx, unsigned int handle, char* dest, unsigned int dest_size);
@@ -41,6 +43,10 @@ int pollnet_get_error(struct pnctx* ctx, unsigned int handle, char* dest, unsign
 unsigned int pollnet_get_connected_client_handle(struct pnctx* ctx, unsigned int handle);
 unsigned int pollnet_listen_ws(struct pnctx* ctx, const char* addr);
 unsigned int pollnet_serve_static_http(struct pnctx* ctx, const char* addr, const char* serve_dir);
+unsigned int pollnet_serve_http(struct pnctx* ctx, const char* addr);
+void pollnet_add_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename, const char* filedata, unsigned int filesize);
+void pollnet_remove_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename);
+int pollnet_get_nanoid(char* dest, unsigned int dest_size);
 ]]
 
 local POLLNET_RESULT_CODES = {
@@ -58,13 +64,20 @@ local _ctx = nil
 
 local function init_ctx()
   if _ctx then return end
-  _ctx = pollnet.pollnet_init()
+  _ctx = ffi.gc(pollnet.pollnet_init(), pollnet.pollnet_shutdown)
   assert(_ctx ~= nil)
+end
+
+local function init_ctx_hack_static()
+  if _ctx then return end
+  _ctx = pollnet.pollnet_get_or_init_static()
+  assert(_ctx ~= nil)
+  pollnet.pollnet_close_all(_ctx)
 end
 
 local function shutdown_ctx()
   if not _ctx then return end
-  pollnet.pollnet_shutdown(_ctx)
+  pollnet.pollnet_shutdown(ffi.gc(_ctx, nil))
   _ctx = nil
 end
 
@@ -93,7 +106,22 @@ function socket_mt:open_ws(url, scratch_size)
 end
 
 function socket_mt:serve_http(addr, dir, scratch_size)
-  return self:_open(scratch_size, pollnet.pollnet_serve_static_http, addr, dir)
+  self.is_http_server = true
+  if dir and dir ~= "" then
+    return self:_open(scratch_size, pollnet.pollnet_serve_static_http, addr, dir)
+  else
+    return self:_open(scratch_size, pollnet.pollnet_serve_http, addr)
+  end
+end
+
+function socket_mt:add_virtual_file(filename, filedata)
+  assert(filedata)
+  local dsize = #filedata
+  pollnet.pollnet_add_virtual_file(_ctx, self._socket, filename, filedata, dsize)
+end
+
+function socket_mt:remove_virtual_file(filename)
+  pollnet.pollnet_remove_virtual_file(_ctx, self._socket, filename)
 end
 
 function socket_mt:listen_ws(addr, scratch_size)
@@ -193,12 +221,20 @@ local function serve_http(addr, dir, scratch_size)
   return Socket():serve_http(addr, dir, scratch_size)
 end
 
+local function get_nanoid()
+  local _id_scratch = ffi.new("int8_t[?]", 128)
+  local msg_size = pollnet.pollnet_get_nanoid(_id_scratch, 128)
+  return ffi.string(_id_scratch, msg_size)
+end
+
 return {
-  init = init_ctx, 
+  init = init_ctx,
+  init_hack_static = init_ctx_hack_static,
   shutdown = shutdown_ctx, 
   open_ws = open_ws, 
   listen_ws = listen_ws,
   serve_http = serve_http,
   Socket = Socket,
   pollnet = pollnet,
+  nanoid = get_nanoid,
 }

@@ -1,6 +1,6 @@
 [package]
 name = "pollnet"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["probable-basilisk <basilisk@mtknn.com>"]
 edition = "2018"
 
@@ -13,6 +13,7 @@ futures-util = "*"
 hyper = "0.13.6"
 hyper-staticfile = "0.5.3"
 http = "0.2"
+nanoid = "0.3.0"
 
 [dependencies.tokio]
 version = "*"
