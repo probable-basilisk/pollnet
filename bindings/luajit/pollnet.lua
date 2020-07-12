@@ -67,6 +67,13 @@ local function init_ctx()
   assert(_ctx ~= nil)
 end
 
+local function init_ctx_hack_static()
+  if _ctx then return end
+  _ctx = pollnet.pollnet_get_or_init_static()
+  assert(_ctx ~= nil)
+  pollnet.pollnet_close_all(_ctx)
+end
+
 local function shutdown_ctx()
   if not _ctx then return end
   pollnet.pollnet_shutdown(_ctx)
@@ -214,7 +221,8 @@ local function serve_http(addr, dir, scratch_size)
 end
 
 return {
-  init = init_ctx, 
+  init = init_ctx,
+  init_hack_static = init_ctx_hack_static,
   shutdown = shutdown_ctx, 
   open_ws = open_ws, 
   listen_ws = listen_ws,

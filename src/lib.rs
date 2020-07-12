@@ -221,7 +221,12 @@ impl PollnetContext {
                 future::ok::<_, hyper::Error>(service_fn(move |req| handle_http_request(req, static_.clone(), virtual_files.clone())))
             });
 
-            let server = hyper::Server::bind(&addr).serve(make_service);
+            let server = hyper::Server::try_bind(&addr);
+            if let Err(bind_err) = server {
+                tx_from_sock.send(SocketMessage::Error(bind_err.to_string())).unwrap_or_default();
+                return;
+            }
+            let server = server.unwrap().serve(make_service);
             let graceful = server.with_graceful_shutdown(async move {
                 let virtual_files = virtual_files_two_the_clone_wars.clone();
                 loop {
@@ -243,10 +248,10 @@ impl PollnetContext {
                 println!("Server trying to gracefully exit?");
             });
             println!("Static server running on http://{}/", addr);
-            
-            graceful.await.expect("Server failed");
-
-            tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+            if let Err(err) = graceful.await {
+                tx_from_sock.send(SocketMessage::Error(err.to_string())).unwrap_or_default(); // don't care at this point
+            }
+            println!("Server stopped.");
         });
 
         let socket = Box::new(PollnetSocket{
