@@ -22,6 +22,8 @@ use hyper_staticfile::Static;
 use std::io::Error as IoError;
 use std::path::Path;
 
+extern crate nanoid;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub enum SocketResult {
@@ -170,6 +172,8 @@ impl PollnetContext {
             println!("Pollnet: tokio runtime starting");
             rt.block_on(async {
                 shutdown_rx.await.unwrap();
+                // uh let's just put in a 'safety' delay to shut everything down?
+                tokio::time::delay_for(std::time::Duration::from_millis(200)).await;
             });
             rt.shutdown_timeout(std::time::Duration::from_millis(200));
             println!("Pollnet: runtime shutdown");
@@ -681,4 +685,18 @@ pub unsafe extern fn pollnet_get_or_init_static() -> *mut PollnetContext {
         HACKSTATICCONTEXT = Box::into_raw(Box::new(PollnetContext::new()))
     }
     HACKSTATICCONTEXT
+}
+
+
+#[no_mangle]
+pub extern fn pollnet_get_nanoid(dest: *mut u8, dest_size: u32) -> i32 {
+    let id = nanoid::nanoid!();
+    if id.len() < (dest_size as usize) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(id.as_ptr(), dest, id.len());
+        }
+        id.len() as i32
+    } else {
+        0
+    }
 }

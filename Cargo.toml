@@ -13,6 +13,7 @@ futures-util = "*"
 hyper = "0.13.6"
 hyper-staticfile = "0.5.3"
 http = "0.2"
+nanoid = "0.3.0"
 
 [dependencies.tokio]
 version = "*"
