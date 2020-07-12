@@ -31,9 +31,11 @@ end)
 local ffi = require("ffi")
 ffi.cdef[[
 struct pnctx* pollnet_init();
+struct pnctx* pollnet_get_or_init_static();
 void pollnet_shutdown(struct pnctx* ctx);
 unsigned int pollnet_open_ws(struct pnctx* ctx, const char* url);
 void pollnet_close(struct pnctx* ctx, unsigned int handle);
+void pollnet_close_all(struct pnctx* ctx);
 void pollnet_send(struct pnctx* ctx, unsigned int handle, const char* msg);
 unsigned int pollnet_update(struct pnctx* ctx, unsigned int handle);
 int pollnet_get(struct pnctx* ctx, unsigned int handle, char* dest, unsigned int dest_size);
@@ -43,7 +45,7 @@ unsigned int pollnet_listen_ws(struct pnctx* ctx, const char* addr);
 unsigned int pollnet_serve_static_http(struct pnctx* ctx, const char* addr, const char* serve_dir);
 unsigned int pollnet_serve_http(struct pnctx* ctx, const char* addr);
 void pollnet_add_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename, const char* filedata, unsigned int filesize);
-void pollnet_remove_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename)
+void pollnet_remove_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename);
 ]]
 
 local POLLNET_RESULT_CODES = {

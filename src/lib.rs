@@ -519,7 +519,6 @@ pub extern fn pollnet_init() -> *mut PollnetContext {
     Box::into_raw(Box::new(PollnetContext::new()))
 }
 
-
 #[no_mangle]
 pub extern fn pollnet_shutdown(ctx: *mut PollnetContext) {
     println!("Pollnet: requested ctx close!");
@@ -531,7 +530,6 @@ pub extern fn pollnet_shutdown(ctx: *mut PollnetContext) {
     drop(b);
     println!("Pollnet: Everything should be dead now!");
 }
-
 
 #[no_mangle]
 pub extern fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u32 {
@@ -546,7 +544,6 @@ pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -
     let ctx = unsafe{&mut *ctx};
     ctx.listen_ws(addr)
 }
-
 
 #[no_mangle]
 pub extern fn pollnet_serve_static_http(ctx: *mut PollnetContext, addr: *const c_char, serve_dir: *const c_char) -> u32 {
@@ -667,4 +664,15 @@ pub extern fn pollnet_get_error(ctx: *mut PollnetContext, handle: u32, dest: *mu
     } else {
         -1
     }
+}
+
+static mut HACKSTATICCONTEXT: *mut PollnetContext = 0 as *mut PollnetContext;
+
+#[no_mangle]
+pub unsafe extern fn pollnet_get_or_init_static() -> *mut PollnetContext {
+    if HACKSTATICCONTEXT.is_null() {
+        println!("Pollnet: INITIALIZING HACK STATIC CONTEXT");
+        HACKSTATICCONTEXT = Box::into_raw(Box::new(PollnetContext::new()))
+    }
+    HACKSTATICCONTEXT
 }
