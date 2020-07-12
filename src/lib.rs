@@ -132,7 +132,7 @@ async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtua
     {
         // Do we need like... more headers???
         let vfiles = virtual_files.read().expect("RwLock poisoned");
-        if let Some(file_data) = vfiles.get(&req.uri().to_string()) {
+        if let Some(file_data) = vfiles.get(req.uri().path()) {
             return Response::builder()
                     .status(http::StatusCode::OK)
                     .body(Body::from(file_data.clone()))
@@ -426,6 +426,28 @@ impl PollnetContext {
         }
     }
 
+    fn add_virtual_file(&mut self, handle: u32, filename: String, filedata: Vec<u8>) {
+        if let Some(sock) = self.sockets.get_mut(&handle) {
+            match sock.status {
+                SocketStatus::OPEN | SocketStatus::OPENING => {
+                    sock.tx.try_send(SocketMessage::FileAdd(filename, filedata)).unwrap_or_default()
+                },
+                _ => (),
+            };
+        }
+    }
+
+    fn remove_virtual_file(&mut self, handle: u32, filename: String) {
+        if let Some(sock) = self.sockets.get_mut(&handle) {
+            match sock.status {
+                SocketStatus::OPEN | SocketStatus::OPENING => {
+                    sock.tx.try_send(SocketMessage::FileRemove(filename)).unwrap_or_default()
+                },
+                _ => (),
+            };
+        }
+    }
+
     fn update(&mut self, handle: u32) -> SocketResult {
         let sock = self.sockets.get_mut(&handle).unwrap();
 
@@ -568,6 +590,21 @@ pub extern fn pollnet_send(ctx: *mut PollnetContext, handle: u32, msg: *const c_
     let ctx = unsafe{&mut *ctx};
     let msg = unsafe { CStr::from_ptr(msg).to_string_lossy().into_owned() };
     ctx.send(handle, msg)
+}
+
+#[no_mangle]
+pub extern fn pollnet_add_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char, filedata: *const u8, datasize: u32) {
+    let ctx = unsafe{&mut *ctx};
+    let filename = unsafe { CStr::from_ptr(filename).to_string_lossy().into_owned() };
+    let filedata = unsafe { std::slice::from_raw_parts(filedata, datasize as usize).to_vec() };
+    ctx.add_virtual_file(handle, filename, filedata)
+}
+
+#[no_mangle]
+pub extern fn pollnet_remove_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char) {
+    let ctx = unsafe{&mut *ctx};
+    let filename = unsafe { CStr::from_ptr(filename).to_string_lossy().into_owned() };
+    ctx.remove_virtual_file(handle, filename)
 }
 
 #[no_mangle]
