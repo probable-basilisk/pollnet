@@ -396,6 +396,7 @@ impl PollnetContext {
                 _ => (),
             }
         }
+        self.sockets.clear(); // everything should be closed and safely droppable
     }
 
     fn close(&mut self, handle: u32) {
