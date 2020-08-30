@@ -161,12 +161,14 @@ function socket_mt:poll()
     self._status = "opening"
     return true
   elseif res == "error" then
+    self._status = "error"
     self._last_message = self:error_msg()
-    self._socket = nil -- hmm
     return false, self._last_message
   elseif res == "closed" then
+    self._status = "closed"
     return false, "closed"
   elseif res == "newclient" then
+    self._status = "open"
     local client_addr = self:_get_message()
     local client_handle = pollnet.pollnet_get_connected_client_handle(_ctx, self._socket)
     assert(client_handle > 0)

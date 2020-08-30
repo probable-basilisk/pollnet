@@ -115,13 +115,13 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
                                 break;
                             },
                             None => {
+                                tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
                                 break;
                             }
                         }
                     },
                 };
             }
-            tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
         },
         Err(err) => {
             println!("Pollnet: connection error: {}", err);
