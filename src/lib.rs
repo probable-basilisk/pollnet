@@ -394,6 +394,85 @@ impl PollnetContext {
         new_handle
     }
 
+    fn open_http_get_simple(&mut self, url: String) -> u32 {
+        let (tx_to_sock, mut _rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        // Spawn a future onto the runtime
+        self.rt_handle.spawn(async move {
+            println!("Pollnet: http get task spawned");
+            match reqwest::get(&url).await{
+                Ok(resp) => {
+                    tx_from_sock.send(SocketMessage::Message(resp.status().to_string())).expect("TX error on http get");
+                    match resp.text().await {
+                        Ok(body) => {
+                            tx_from_sock.send(SocketMessage::Message(body)).expect("TX error on http body");
+                        },
+                        Err(body_err) => {
+                            tx_from_sock.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
+                        }
+                    }
+                },
+                Err(err) => {
+                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on http get error");
+                }
+            }
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
+        new_handle
+    }
+
+    fn open_http_post_simple(&mut self, url: String, body: Vec<u8>) -> u32 {
+        let (tx_to_sock, mut _rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        // Spawn a future onto the runtime
+        self.rt_handle.spawn(async move {
+            println!("Pollnet: http post task spawned");
+            let client = reqwest::Client::new();
+            match client.post(&url).body(body).send().await {
+                Ok(resp) => {
+                    tx_from_sock.send(SocketMessage::Message(resp.status().to_string())).expect("TX error on http post");
+                    match resp.text().await {
+                        Ok(body) => {
+                            tx_from_sock.send(SocketMessage::Message(body)).expect("TX error on http body");
+                        },
+                        Err(body_err) => {
+                            tx_from_sock.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
+                        }
+                    }
+                },
+                Err(err) => {
+                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on http post error");
+                }
+            }
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
+        new_handle
+    }
+
     fn close_all(&mut self) {
         for (_, sock) in self.sockets.iter_mut() {
             match sock.status {
@@ -553,6 +632,21 @@ pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -
     let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
     ctx.listen_ws(addr)
+}
+
+#[no_mangle]
+pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
+    let ctx = unsafe{&mut *ctx};
+    ctx.open_http_get_simple(addr)
+}
+
+#[no_mangle]
+pub extern fn pollnet_simple_http_post(ctx: *mut PollnetContext, addr: *const c_char, bodydata: *const u8, bodysize: u32) -> u32 {
+    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
+    let body = unsafe { std::slice::from_raw_parts(bodydata, bodysize as usize).to_vec() };
+    let ctx = unsafe{&mut *ctx};
+    ctx.open_http_post_simple(addr, body)
 }
 
 #[no_mangle]
