@@ -5,22 +5,19 @@ use std::sync::RwLock;
 use std::sync::Arc;
 use std::thread;
 use std::net::SocketAddr;
+use std::io::Error as IoError;
+use std::path::Path;
+use std::os::raw::c_char;
+use std::ffi::CStr;
+use log::{error, warn, info};
 use tokio::net::{TcpListener, TcpStream};
-//use tokio::net::tcp::stream; // hmm why is this private????
-use tokio::runtime; // 0.1.15
+use tokio::runtime;
 use tokio_tungstenite::{connect_async, accept_async};
 use futures::executor::block_on;
 use futures_util::{SinkExt, StreamExt, future};
-use std::os::raw::c_char;
-use std::ffi::CStr;
-
-// use http::response::Builder as ResponseBuilder;
-// use http::{header, StatusCode};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response};
 use hyper_staticfile::Static;
-use std::io::Error as IoError;
-use std::path::Path;
 
 extern crate nanoid;
 
@@ -125,7 +122,7 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
             }
         },
         Err(err) => {
-            println!("Pollnet: connection error: {}", err);
+            error!("connection error: {}", err);
             tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
         }
     }
@@ -153,6 +150,11 @@ async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtua
 
 impl PollnetContext {
     fn new() -> PollnetContext {
+        match env_logger::try_init() {
+            Err(err) => warn!("Multiple contexts created!: {}", err),
+            _ => (),
+        }
+
         let (handle_tx, handle_rx) = std::sync::mpsc::channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let shutdown_tx = Some(shutdown_tx);
@@ -170,14 +172,14 @@ impl PollnetContext {
                 .expect("Unable to give runtime handle to another thread");
 
             // Continue running until notified to shutdown
-            println!("Pollnet: tokio runtime starting");
+            info!("tokio runtime starting");
             rt.block_on(async {
                 shutdown_rx.await.unwrap();
                 // uh let's just put in a 'safety' delay to shut everything down?
                 tokio::time::delay_for(std::time::Duration::from_millis(200)).await;
             });
             rt.shutdown_timeout(std::time::Duration::from_millis(200));
-            println!("Pollnet: runtime shutdown");
+            info!("tokio runtime shutdown");
         }));
 
         PollnetContext{
@@ -201,9 +203,10 @@ impl PollnetContext {
 
         // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
-            println!("Pollnet: HTTP server task spawned");
+            info!("HTTP server spawned");
             let addr = bind_addr.parse();
             if let Err(_) = addr {
+                error!("Invalid TCP address: {}", bind_addr);
                 tx_from_sock.send(SocketMessage::Error("Invalid TCP address".to_string())).unwrap_or_default();
                 return;
             }
@@ -228,6 +231,7 @@ impl PollnetContext {
 
             let server = hyper::Server::try_bind(&addr);
             if let Err(bind_err) = server {
+                error!("Couldn't bind {}: {}", bind_addr, bind_err);
                 tx_from_sock.send(SocketMessage::Error(bind_err.to_string())).unwrap_or_default();
                 return;
             }
@@ -250,13 +254,13 @@ impl PollnetContext {
                         _ => {} // ignore sends?
                     }
                 }
-                println!("Server trying to gracefully exit?");
+                info!("HTTP server trying to gracefully exit?");
             });
-            println!("Static server running on http://{}/", addr);
+            info!("HTTP server running on http://{}/", addr);
             if let Err(err) = graceful.await {
                 tx_from_sock.send(SocketMessage::Error(err.to_string())).unwrap_or_default(); // don't care at this point
             }
-            println!("Server stopped.");
+            info!("HTTP server stopped.");
         });
 
         let socket = Box::new(PollnetSocket{
@@ -277,17 +281,15 @@ impl PollnetContext {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
-        // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
-            println!("Pollnet: WS server task spawned");
-            //let real_url = url::Url::parse(&url);
+            info!("WS server spawned");
             let listener = TcpListener::bind(&addr).await;
             if let Err(tcp_err) = listener {
                 tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
                 return;
             }
             let mut listener = listener.unwrap();
-            println!("Pollnet: waiting for connections");
+            info!("WS server waiting for connections on {}", addr);
             tx_from_sock.send(SocketMessage::Connect).expect("oh boy");                    
             loop {
                 tokio::select! {
@@ -310,7 +312,6 @@ impl PollnetContext {
                     },
                 };
             }
-            //tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
         });
 
         let socket = Box::new(PollnetSocket{
@@ -332,14 +333,15 @@ impl PollnetContext {
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            println!("Pollnet: WS task spawned");
+            info!("WS client spawned");
             let real_url = url::Url::parse(&url);
             if let Err(url_err) = real_url {
+                error!("Invalid URL: {}", url);
                 tx_from_sock.send(SocketMessage::Error(url_err.to_string())).unwrap_or_default();
                 return;
             }
 
-            println!("Pollnet: attempting to connect");
+            info!("WS client attempting to connect to {}", url);
             match connect_async(real_url.unwrap()).await {
                 Ok((mut ws_stream, _)) => {
                     tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
@@ -370,11 +372,11 @@ impl PollnetContext {
                             },
                         };
                     }
-                    println!("Pollnet: closing socket!");
+                    info!("Pollnet: closing socket!");
                     ws_stream.close(None).await.unwrap_or_default(); // if this errors we don't care
                 },
                 Err(err) => {
-                    println!("Pollnet: connection error: {}", err);
+                    error!("WS client connection error: {}", err);
                     tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
                 }
             }
@@ -399,7 +401,7 @@ impl PollnetContext {
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            println!("Pollnet: http get task spawned");
+            info!("HTTP GET: {}", url);
             match reqwest::get(&url).await{
                 Ok(resp) => {
                     tx_from_sock.send(SocketMessage::Message(resp.status().to_string())).expect("TX error on http get");
@@ -413,6 +415,7 @@ impl PollnetContext {
                     }
                 },
                 Err(err) => {
+                    error!("HTTP GET failed: {}", err);
                     tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on http get error");
                 }
             }
@@ -437,7 +440,7 @@ impl PollnetContext {
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            println!("Pollnet: http post task spawned");
+            info!("HTTP POST: {} (w/ {})", url, content_type);
             let client = reqwest::Client::new();
             match client.post(&url)
                         .header(reqwest::header::CONTENT_TYPE, content_type)
@@ -456,6 +459,7 @@ impl PollnetContext {
                     }
                 },
                 Err(err) => {
+                    error!("HTTP POST failed: {}", err);
                     tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on http post error");
                 }
             }
@@ -476,6 +480,7 @@ impl PollnetContext {
     }
 
     fn close_all(&mut self) {
+        info!("Closing all sockets!");
         for (_, sock) in self.sockets.iter_mut() {
             match sock.status {
                 SocketStatus::OPEN | SocketStatus::OPENING => {
@@ -596,16 +601,16 @@ impl PollnetContext {
 
 
     fn shutdown(&mut self) {
-        println!("Pollnet: starting shutdown");
+        info!("Starting shutdown");
         self.close_all();
-        println!("Pollnet: all sockets should be closed?");
+        info!("All sockets should be closed?");
         if let Some(tx) = self.shutdown_tx.take() {
             tx.send(0).unwrap_or_default();
         }
         if let Some(handle) = self.thread.take() {
             handle.join().unwrap_or_default();
         }
-        println!("Pollnet: thread should be joined?");
+        info!("Thread should be joined?");
     }
 }
 
@@ -616,14 +621,14 @@ pub extern fn pollnet_init() -> *mut PollnetContext {
 
 #[no_mangle]
 pub extern fn pollnet_shutdown(ctx: *mut PollnetContext) {
-    println!("Pollnet: requested ctx close!");
+    info!("Requested ctx close!");
     let ctx = unsafe{&mut *ctx};
     ctx.shutdown();
 
     // take ownership and drop
     let b = unsafe{ Box::from_raw(ctx) };
     drop(b);
-    println!("Pollnet: Everything should be dead now!");
+    info!("Everything should be dead now!");
 }
 
 #[no_mangle]
@@ -782,7 +787,7 @@ static mut HACKSTATICCONTEXT: *mut PollnetContext = 0 as *mut PollnetContext;
 #[no_mangle]
 pub unsafe extern fn pollnet_get_or_init_static() -> *mut PollnetContext {
     if HACKSTATICCONTEXT.is_null() {
-        println!("Pollnet: INITIALIZING HACK STATIC CONTEXT");
+        warn!("INITIALIZING HACK STATIC CONTEXT");
         HACKSTATICCONTEXT = Box::into_raw(Box::new(PollnetContext::new()))
     }
     HACKSTATICCONTEXT
