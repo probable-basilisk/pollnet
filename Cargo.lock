@@ -752,7 +752,7 @@ checksum = "05da548ad6865900e60eaba7f589cc0783590a92e940c26953ff81ddbab2d677"
 
 [[package]]
 name = "pollnet"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "futures",
  "futures-util",

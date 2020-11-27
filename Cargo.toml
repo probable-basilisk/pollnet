@@ -1,6 +1,6 @@
 [package]
 name = "pollnet"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["probable-basilisk <basilisk@mtknn.com>"]
 edition = "2018"
 
