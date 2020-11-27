@@ -27,6 +27,26 @@ async.run(function()
   end
   print("Socket closed: ", sock:last_message())
 end)
+
+-- example http get:
+async.run(function()
+  local sock = pollnet.http_get("https://www.example.com")
+  while sock:poll() do
+    if sock:last_message() then
+      print("HTTP STATUS: ", sock:last_message())
+      break
+    end
+    async.await_frames(1)
+  end
+  while sock:poll() do
+    if sock:last_message() then
+      print("HTTP BODY: ", sock:last_message())
+      break
+    end
+    async.await_frames(1)
+  end
+  sock:close()
+end)
 ]]
 
 local ffi = require("ffi")
@@ -236,6 +256,14 @@ local function serve_http(addr, dir, scratch_size)
   return Socket():serve_http(addr, dir, scratch_size)
 end
 
+local function http_get(url, scratch_size)
+  return Socket():http_get(url, scratch_size)
+end
+
+local function http_post(url, body, content_type, scratch_size)
+  return Socket():http_post(url, body, content_type, scratch_size)
+end
+
 local function get_nanoid()
   local _id_scratch = ffi.new("int8_t[?]", 128)
   local msg_size = pollnet.pollnet_get_nanoid(_id_scratch, 128)
@@ -249,6 +277,8 @@ return {
   open_ws = open_ws, 
   listen_ws = listen_ws,
   serve_http = serve_http,
+  http_get = http_get,
+  http_post = http_post,
   Socket = Socket,
   pollnet = pollnet,
   nanoid = get_nanoid,

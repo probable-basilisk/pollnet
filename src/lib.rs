@@ -58,6 +58,7 @@ enum SocketMessage {
     Connect,
     Disconnect,
     Message(String),
+    BinaryMessage(Vec<u8>),
     Error(String),
     NewClient(ClientConn),
     FileAdd(String, Vec<u8>),
@@ -69,7 +70,7 @@ pub struct PollnetSocket {
     status: SocketStatus,
     tx: tokio::sync::mpsc::Sender<SocketMessage>,
     rx: std::sync::mpsc::Receiver<SocketMessage>,
-    message: Option<String>,
+    message: Option<Vec<u8>>,
     error: Option<String>,
     last_client_handle: u32,
 }
@@ -330,7 +331,6 @@ impl PollnetContext {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
-        // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
             println!("Pollnet: WS task spawned");
             let real_url = url::Url::parse(&url);
@@ -398,15 +398,14 @@ impl PollnetContext {
         let (tx_to_sock, mut _rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
-        // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
             println!("Pollnet: http get task spawned");
             match reqwest::get(&url).await{
                 Ok(resp) => {
                     tx_from_sock.send(SocketMessage::Message(resp.status().to_string())).expect("TX error on http get");
-                    match resp.text().await {
+                    match resp.bytes().await {
                         Ok(body) => {
-                            tx_from_sock.send(SocketMessage::Message(body)).expect("TX error on http body");
+                            tx_from_sock.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
                         },
                         Err(body_err) => {
                             tx_from_sock.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
@@ -437,7 +436,6 @@ impl PollnetContext {
         let (tx_to_sock, mut _rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
-        // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
             println!("Pollnet: http post task spawned");
             let client = reqwest::Client::new();
@@ -448,9 +446,9 @@ impl PollnetContext {
                         .await {
                 Ok(resp) => {
                     tx_from_sock.send(SocketMessage::Message(resp.status().to_string())).expect("TX error on http post");
-                    match resp.text().await {
+                    match resp.bytes().await {
                         Ok(body) => {
-                            tx_from_sock.send(SocketMessage::Message(body)).expect("TX error on http body");
+                            tx_from_sock.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
                         },
                         Err(body_err) => {
                             tx_from_sock.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
@@ -558,6 +556,10 @@ impl PollnetContext {
                         SocketResult::CLOSED
                     },
                     Ok(SocketMessage::Message(msg)) => {
+                        sock.message = Some(msg.into_bytes());
+                        SocketResult::HASDATA
+                    },
+                    Ok(SocketMessage::BinaryMessage(msg)) => {
                         sock.message = Some(msg);
                         SocketResult::HASDATA
                     },
@@ -571,7 +573,7 @@ impl PollnetContext {
                         let new_handle = self.next_handle;
                         self.next_handle += 1;
                         sock.last_client_handle = new_handle;
-                        sock.message = Some(conn.id);
+                        sock.message = Some(conn.id.into_bytes());
                         let client_socket = Box::new(PollnetSocket{
                             tx: conn.tx,
                             rx: conn.rx,
