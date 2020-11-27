@@ -3,7 +3,7 @@ struct pnctx* pollnet_get_or_init_static();
 void pollnet_shutdown(struct pnctx* ctx);
 unsigned int pollnet_open_ws(struct pnctx* ctx, const char* url);
 unsigned int pollnet_simple_http_get(struct pnctx* ctx, const char* url);
-unsigned int pollnet_simple_http_post(struct pnctx* ctx, const char* url, const char* data, unsigned int datasize);
+unsigned int pollnet_simple_http_post(struct pnctx* ctx, const char* url, const char* content_type, const char* data, unsigned int datasize);
 void pollnet_close(struct pnctx* ctx, unsigned int handle);
 void pollnet_close_all(struct pnctx* ctx);
 void pollnet_send(struct pnctx* ctx, unsigned int handle, const char* msg);
