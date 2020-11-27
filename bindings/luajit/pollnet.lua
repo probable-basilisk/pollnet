@@ -20,11 +20,32 @@ async.run(function()
       if msg == "PING :tmi.twitch.tv" then
         sock:send("PONG :tmi.twitch.tv")
       end
-      print(msg) 
+      print(msg)
+    else
+      async.await_frames(1)
+    end
+  end
+  print("Socket closed: ", sock:last_message())
+end)
+
+-- example http get:
+async.run(function()
+  local sock = pollnet.http_get("https://www.example.com")
+  while sock:poll() do
+    if sock:last_message() then
+      print("HTTP STATUS: ", sock:last_message())
+      break
     end
     async.await_frames(1)
   end
-  print("Socket closed: ", sock:last_message())
+  while sock:poll() do
+    if sock:last_message() then
+      print("HTTP BODY: ", sock:last_message())
+      break
+    end
+    async.await_frames(1)
+  end
+  sock:close()
 end)
 ]]
 
@@ -34,6 +55,8 @@ struct pnctx* pollnet_init();
 struct pnctx* pollnet_get_or_init_static();
 void pollnet_shutdown(struct pnctx* ctx);
 unsigned int pollnet_open_ws(struct pnctx* ctx, const char* url);
+unsigned int pollnet_simple_http_get(struct pnctx* ctx, const char* url);
+unsigned int pollnet_simple_http_post(struct pnctx* ctx, const char* url, const char* content_type, const char* data, unsigned int datasize);
 void pollnet_close(struct pnctx* ctx, unsigned int handle);
 void pollnet_close_all(struct pnctx* ctx);
 void pollnet_send(struct pnctx* ctx, unsigned int handle, const char* msg);
@@ -89,7 +112,7 @@ end
 function socket_mt:_open(scratch_size, opener, ...)
   init_ctx()
   if self._socket then self:close() end
-  if not scratch_size then scratch_size = 64000 end
+  scratch_size = scratch_size or 64000
   if type(opener) == "number" then
     self._socket = opener
   else
@@ -99,6 +122,16 @@ function socket_mt:_open(scratch_size, opener, ...)
   self._scratch_size = scratch_size
   self._status = "unpolled"
   return self
+end
+
+function socket_mt:http_get(url, scratch_size)
+  return self:_open(scratch_size, pollnet.pollnet_simple_http_get, url)
+end
+
+function socket_mt:http_post(url, body, content_type, scratch_size)
+  body = body or ""
+  content_type = content_type or "application/x-www-form-urlencoded"
+  return self:_open(scratch_size, pollnet.pollnet_simple_http_post, url, content_type, body, #body)
 end
 
 function socket_mt:open_ws(url, scratch_size)
@@ -223,6 +256,14 @@ local function serve_http(addr, dir, scratch_size)
   return Socket():serve_http(addr, dir, scratch_size)
 end
 
+local function http_get(url, scratch_size)
+  return Socket():http_get(url, scratch_size)
+end
+
+local function http_post(url, body, content_type, scratch_size)
+  return Socket():http_post(url, body, content_type, scratch_size)
+end
+
 local function get_nanoid()
   local _id_scratch = ffi.new("int8_t[?]", 128)
   local msg_size = pollnet.pollnet_get_nanoid(_id_scratch, 128)
@@ -236,6 +277,8 @@ return {
   open_ws = open_ws, 
   listen_ws = listen_ws,
   serve_http = serve_http,
+  http_get = http_get,
+  http_post = http_post,
   Socket = Socket,
   pollnet = pollnet,
   nanoid = get_nanoid,

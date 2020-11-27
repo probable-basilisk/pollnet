@@ -4,7 +4,8 @@ within game-embedded LuaJIT environments (e.g., mods)
 
 # Features
 * Websocket client and server (both ws:// and wss:// for clients)
-* HTTP server: serve static files from disk or from memory
+* bare-bones HTTP client: simple GET/POST
+* bare-bones HTTP server: serve static files from disk or from memory
 
 # Usage (luajit bindings)
 ```Lua
@@ -32,6 +33,25 @@ each_game_tick(function()
       sock:send("PONG :tmi.twitch.tv")
     end
     print("CHAT: " .. msg) 
+  end
+end)
+
+-- HTTP requests work roughly the same way, except you
+-- only get two messages back: the status code followed by the body
+local req_sock = pollnet.http_get("https://www.example.com")
+local part_order = {"STATUS CODE:", "BODY:"}
+local parts = {}
+each_game_tick(function()
+  if not req_sock then return end
+  local happy, msg = req_sock:poll()
+  if not happy then
+    req_sock:close() -- good form
+    req_sock = nil
+    return
+  end
+  if msg then
+    table.insert(parts, msg)
+    print(part_order[#parts], parts[#parts])
   end
 end)
 ```
