@@ -80,6 +80,12 @@ pub struct PollnetContext {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
 }
 
+#[derive(Debug)]
+enum RecvError {
+    Empty,
+    Disconnected,
+}
+
 async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::sync::mpsc::Sender<SocketMessage>) {//rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
     let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
     let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
@@ -544,19 +550,28 @@ impl PollnetContext {
         }
     }
 
-    fn update(&mut self, handle: u32) -> SocketResult {
+    fn update(&mut self, handle: u32, blocking: bool) -> SocketResult {
         let sock = self.sockets.get_mut(&handle).unwrap();
 
         match sock.status {
             SocketStatus::OPEN | SocketStatus::OPENING => {
                 // This block is apparently impossible to move into a helper function
                 // for borrow checker "reasons"
-                match sock.rx.try_recv() {
+                let result = if blocking {
+                    sock.rx.recv().map_err(|_err| RecvError::Disconnected)
+                } else {
+                    sock.rx.try_recv().map_err(|err| match err {
+                        std::sync::mpsc::TryRecvError::Empty => RecvError::Empty,
+                        std::sync::mpsc::TryRecvError::Disconnected => RecvError::Disconnected,
+                    })
+                };
+
+                match result {
                     Ok(SocketMessage::Connect) => {
                         sock.status = SocketStatus::OPEN;
                         SocketResult::OPENING
                     },
-                    Ok(SocketMessage::Disconnect) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Ok(SocketMessage::Disconnect) | Err(RecvError::Disconnected) => {
                         sock.status = SocketStatus::CLOSED;
                         SocketResult::CLOSED
                     },
@@ -591,7 +606,7 @@ impl PollnetContext {
                         SocketResult::NEWCLIENT
                     },
                     Ok(_) => SocketResult::NODATA,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => SocketResult::NODATA,
+                    Err(RecvError::Empty) => SocketResult::NODATA,
                 }
             },
             SocketStatus::CLOSED => SocketResult::CLOSED,
@@ -723,7 +738,13 @@ pub extern fn pollnet_remove_virtual_file(ctx: *mut PollnetContext, handle: u32,
 #[no_mangle]
 pub extern fn pollnet_update(ctx: *mut PollnetContext, handle: u32) -> SocketResult {
     let ctx = unsafe{&mut *ctx};
-    ctx.update(handle)
+    ctx.update(handle, false)
+}
+
+#[no_mangle]
+pub extern fn pollnet_update_blocking(ctx: *mut PollnetContext, handle: u32) -> SocketResult {
+    let ctx = unsafe{&mut *ctx};
+    ctx.update(handle, true)
 }
 
 #[no_mangle]
