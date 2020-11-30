@@ -197,10 +197,14 @@ impl PollnetContext {
         }
     }
 
+    fn _next_handle_fuck_the_borrow_checker(next_handle: &mut u32) -> u32 {
+        let new_handle: u32 = *next_handle;
+        *next_handle += 1;
+        new_handle   
+    }
+
     fn _next_handle(&mut self) -> u32 {
-        let new_handle = self.next_handle;
-        self.next_handle += 1;
-        new_handle
+        PollnetContext::_next_handle_fuck_the_borrow_checker(&mut self.next_handle)
     }
 
     fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> u32 {
@@ -590,8 +594,7 @@ impl PollnetContext {
                     },
                     Ok(SocketMessage::NewClient(conn)) => {
                         // can't use self._next_handle() either for questionable reasons
-                        let new_handle = self.next_handle;
-                        self.next_handle += 1;
+                        let new_handle = PollnetContext::_next_handle_fuck_the_borrow_checker(&mut self.next_handle);
                         sock.last_client_handle = new_handle;
                         sock.message = Some(conn.id.into_bytes());
                         let client_socket = Box::new(PollnetSocket{
