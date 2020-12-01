@@ -532,6 +532,17 @@ impl PollnetContext {
         }
     }
 
+    fn send_binary(&mut self, handle: u32, msg: Vec<u8>) {
+        if let Some(sock) = self.sockets.get_mut(&handle) {
+            match sock.status {
+                SocketStatus::OPEN | SocketStatus::OPENING => {
+                    sock.tx.try_send(SocketMessage::BinaryMessage(msg)).unwrap_or_default()
+                },
+                _ => (),
+            };
+        }
+    }
+
     fn add_virtual_file(&mut self, handle: u32, filename: String, filedata: Vec<u8>) {
         if let Some(sock) = self.sockets.get_mut(&handle) {
             match sock.status {
@@ -732,6 +743,13 @@ pub extern fn pollnet_send(ctx: *mut PollnetContext, handle: u32, msg: *const c_
     let ctx = unsafe{&mut *ctx};
     let msg = c_str_to_string(msg);
     ctx.send(handle, msg)
+}
+
+#[no_mangle]
+pub extern fn pollnet_send_binary(ctx: *mut PollnetContext, handle: u32, msg: *const u8, msgsize: u32) {
+    let ctx = unsafe{&mut *ctx};
+    let msg = c_data_to_vec(msg, msgsize);
+    ctx.send_binary(handle, msg)
 }
 
 #[no_mangle]
