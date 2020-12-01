@@ -136,6 +136,56 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
     }
 }
 
+async fn accept_tcp(mut tcp_stream: TcpStream, addr: SocketAddr, outer_tx: Option<std::sync::mpsc::Sender<SocketMessage>>) {
+    let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+    let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+    if let Some(tx) = outer_tx {
+        tx.send(SocketMessage::NewClient(ClientConn{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            id: addr.to_string(),
+        })).expect("this shouldn't ever break?");
+    }
+
+    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+    let mut buf = [0; 65536];
+    loop {
+        tokio::select! {
+            from_c_message = rx_to_sock.recv() => {
+                match from_c_message {
+                    Some(SocketMessage::Message(msg)) => {
+                        tcp_stream.write_all(msg.as_bytes()).await.expect("TCP send error");
+                    },
+                    Some(SocketMessage::BinaryMessage(msg)) => {
+                        tcp_stream.write_all(&msg).await.expect("TCP send error");
+                    },
+                    _ => break
+                }
+            },
+            from_sock_message = tcp_stream.read(&mut buf) => {
+                match from_sock_message {
+                    Ok(0) => {
+                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
+                        break;
+                    },
+                    Ok(n) => {
+                        // TODO: can we avoid these copies? Does it matter?
+                        let submessage = buf[0..n].to_vec();
+                        tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
+                    },
+                    Err(err) => {
+                        tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
+                        break;
+                    }
+                }
+            },
+        };
+    }
+    info!("Closing TCP socket!");
+    tcp_stream.shutdown(Shutdown::Both).unwrap_or_default(); // if this errors we don't care
+}
+
 async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>) -> Result<Response<Body>, IoError> {
     {
         // Do we need like... more headers???
@@ -295,12 +345,13 @@ impl PollnetContext {
 
         self.rt_handle.spawn(async move {
             info!("WS server spawned");
-            let listener = TcpListener::bind(&addr).await;
-            if let Err(tcp_err) = listener {
-                tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
-                return;
-            }
-            let mut listener = listener.unwrap();
+            let mut listener = match TcpListener::bind(&addr).await {
+                Ok(listener) => listener,
+                Err(tcp_err) => {
+                    tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
+                    return;
+                }
+            };
             info!("WS server waiting for connections on {}", addr);
             tx_from_sock.send(SocketMessage::Connect).expect("oh boy");                    
             loop {
@@ -315,6 +366,58 @@ impl PollnetContext {
                         match new_client {
                             Ok((tcp_stream, addr)) => {
                                 tokio::spawn(accept_stream(tcp_stream, addr, tx_from_sock.clone()));
+                            },
+                            Err(msg) => {
+                                tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                                break;
+                            }
+                        }
+                    },
+                };
+            }
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
+        new_handle
+    }
+
+    fn listen_tcp(&mut self, addr: String) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        self.rt_handle.spawn(async move {
+            info!("TCP server spawned");
+            let mut listener = match TcpListener::bind(&addr).await {
+                Ok(listener) => listener,
+                Err(tcp_err) => {
+                    tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
+                    return;
+                }
+            };
+            info!("TCP server waiting for connections on {}", addr);
+            tx_from_sock.send(SocketMessage::Connect).expect("oh boy");                    
+            loop {
+                tokio::select! {
+                    from_c_message = rx_to_sock.recv() => {
+                        match from_c_message {
+                            Some(SocketMessage::Message(_msg)) => {}, // server socket ignores sends
+                            _ => break
+                        }
+                    },
+                    new_client = listener.accept() => {
+                        match new_client {
+                            Ok((tcp_stream, addr)) => {
+                                tokio::spawn(accept_tcp(tcp_stream, addr, Some(tx_from_sock.clone())));
                             },
                             Err(msg) => {
                                 tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
@@ -751,6 +854,20 @@ pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
     ctx.listen_ws(addr)
+}
+
+#[no_mangle]
+pub extern fn pollnet_open_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+    let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    ctx.open_tcp(addr)
+}
+
+#[no_mangle]
+pub extern fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+    let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    ctx.listen_tcp(addr)
 }
 
 #[no_mangle]
