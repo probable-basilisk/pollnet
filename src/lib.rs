@@ -197,14 +197,14 @@ impl PollnetContext {
         }
     }
 
-    fn _next_handle_fuck_the_borrow_checker(next_handle: &mut u32) -> u32 {
+    fn _next_handle_that_satisfies_the_borrow_checker(next_handle: &mut u32) -> u32 {
         let new_handle: u32 = *next_handle;
         *next_handle += 1;
         new_handle   
     }
 
     fn _next_handle(&mut self) -> u32 {
-        PollnetContext::_next_handle_fuck_the_borrow_checker(&mut self.next_handle)
+        PollnetContext::_next_handle_that_satisfies_the_borrow_checker(&mut self.next_handle)
     }
 
     fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> u32 {
@@ -555,7 +555,10 @@ impl PollnetContext {
     }
 
     fn update(&mut self, handle: u32, blocking: bool) -> SocketResult {
-        let sock = self.sockets.get_mut(&handle).unwrap();
+        let sock = match self.sockets.get_mut(&handle) {
+            Some(sock) => sock,
+            None => return SocketResult::INVALIDHANDLE,
+        };
 
         match sock.status {
             SocketStatus::OPEN | SocketStatus::OPENING => {
@@ -594,7 +597,7 @@ impl PollnetContext {
                     },
                     Ok(SocketMessage::NewClient(conn)) => {
                         // can't use self._next_handle() either for questionable reasons
-                        let new_handle = PollnetContext::_next_handle_fuck_the_borrow_checker(&mut self.next_handle);
+                        let new_handle = PollnetContext::_next_handle_that_satisfies_the_borrow_checker(&mut self.next_handle);
                         sock.last_client_handle = new_handle;
                         sock.message = Some(conn.id.into_bytes());
                         let client_socket = Box::new(PollnetSocket{
@@ -632,6 +635,14 @@ impl PollnetContext {
     }
 }
 
+fn c_str_to_string(s: *const c_char) -> String {
+    unsafe { CStr::from_ptr(s).to_string_lossy().into_owned() }
+}
+
+fn c_data_to_vec(data: *const u8, datasize: u32) -> Vec<u8> {
+    unsafe { std::slice::from_raw_parts(data, datasize as usize).to_vec() }
+}
+
 #[no_mangle]
 pub extern fn pollnet_init() -> *mut PollnetContext {
     Box::into_raw(Box::new(PollnetContext::new()))
@@ -651,46 +662,46 @@ pub extern fn pollnet_shutdown(ctx: *mut PollnetContext) {
 
 #[no_mangle]
 pub extern fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u32 {
-    let url = unsafe { CStr::from_ptr(url).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let url = c_str_to_string(url);
     ctx.open_ws(url)
 }
 
 #[no_mangle]
 pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
     ctx.listen_ws(addr)
 }
 
 #[no_mangle]
 pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
     ctx.open_http_get_simple(addr)
 }
 
 #[no_mangle]
 pub extern fn pollnet_simple_http_post(ctx: *mut PollnetContext, addr: *const c_char, content_type: *const c_char, bodydata: *const u8, bodysize: u32) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
-    let content_type = unsafe { CStr::from_ptr(content_type).to_string_lossy().into_owned() };
-    let body = unsafe { std::slice::from_raw_parts(bodydata, bodysize as usize).to_vec() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    let content_type = c_str_to_string(content_type);
+    let body = c_data_to_vec(bodydata, bodysize);
     ctx.open_http_post_simple(addr, content_type, body)
 }
 
 #[no_mangle]
 pub extern fn pollnet_serve_static_http(ctx: *mut PollnetContext, addr: *const c_char, serve_dir: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
-    let serve_dir = unsafe { CStr::from_ptr(serve_dir).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    let serve_dir = c_str_to_string(serve_dir);
     ctx.serve_http(addr, Some(serve_dir))
 }
 
 #[no_mangle]
 pub extern fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
     ctx.serve_http(addr, None)
 }
 
@@ -719,22 +730,22 @@ pub extern fn pollnet_status(ctx: *mut PollnetContext, handle: u32) -> SocketSta
 #[no_mangle]
 pub extern fn pollnet_send(ctx: *mut PollnetContext, handle: u32, msg: *const c_char) {
     let ctx = unsafe{&mut *ctx};
-    let msg = unsafe { CStr::from_ptr(msg).to_string_lossy().into_owned() };
+    let msg = c_str_to_string(msg);
     ctx.send(handle, msg)
 }
 
 #[no_mangle]
 pub extern fn pollnet_add_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char, filedata: *const u8, datasize: u32) {
     let ctx = unsafe{&mut *ctx};
-    let filename = unsafe { CStr::from_ptr(filename).to_string_lossy().into_owned() };
-    let filedata = unsafe { std::slice::from_raw_parts(filedata, datasize as usize).to_vec() };
+    let filename = c_str_to_string(filename);
+    let filedata = c_data_to_vec(filedata, datasize);
     ctx.add_virtual_file(handle, filename, filedata)
 }
 
 #[no_mangle]
 pub extern fn pollnet_remove_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char) {
     let ctx = unsafe{&mut *ctx};
-    let filename = unsafe { CStr::from_ptr(filename).to_string_lossy().into_owned() };
+    let filename = c_str_to_string(filename);
     ctx.remove_virtual_file(handle, filename)
 }
 
@@ -753,56 +764,57 @@ pub extern fn pollnet_update_blocking(ctx: *mut PollnetContext, handle: u32) -> 
 #[no_mangle]
 pub extern fn pollnet_get(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, dest_size: u32) -> i32 {
     let ctx = unsafe{&mut *ctx};
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        match socket.message.take() {
-            Some(msg) => {
-                let ncopy = msg.len();
-                if ncopy < (dest_size as usize) {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
-                    }
-                    ncopy as i32
-                } else {
-                    0
+    let socket = match ctx.sockets.get_mut(&handle) {
+        Some(socket) => socket,
+        None => return -1,
+    };
+
+    match socket.message.take() {
+        Some(msg) => {
+            let ncopy = msg.len();
+            if ncopy < (dest_size as usize) {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
                 }
-            },
-            None => 0,
-        }
-    } else {
-        -1
+                ncopy as i32
+            } else {
+                0
+            }
+        },
+        None => 0,
     }
 }
 
 #[no_mangle]
 pub extern fn pollnet_get_connected_client_handle(ctx: *mut PollnetContext, handle: u32) -> u32 {
     let ctx = unsafe{&mut *ctx};
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        socket.last_client_handle
-    } else {
-        0
+    match ctx.sockets.get_mut(&handle) {
+        Some(socket) => socket.last_client_handle,
+        None => 0,
     }
 }
 
 #[no_mangle]
 pub extern fn pollnet_get_error(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, dest_size: u32) -> i32 {
     let ctx = unsafe{&mut *ctx};
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        match socket.error.take() {
-            Some(msg) => {
-                let ncopy = msg.len();
-                if ncopy < (dest_size as usize) {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
-                    }
-                    ncopy as i32
-                } else {
-                    0
+    let socket = match ctx.sockets.get_mut(&handle) {
+        Some(socket) => socket,
+        None => return -1,
+    };
+
+    match socket.error.take() {
+        Some(msg) => {
+            let ncopy = msg.len();
+            if ncopy < (dest_size as usize) {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
                 }
-            },
-            None => 0,
-        }
-    } else {
-        -1
+                ncopy as i32
+            } else {
+                0
+            }
+        },
+        None => 0,
     }
 }
 
