@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use std::sync::Arc;
 use std::thread;
 use std::net::SocketAddr;
+use std::net::Shutdown;
 use std::io::Error as IoError;
 use std::path::Path;
 use std::os::raw::c_char;
@@ -12,6 +13,7 @@ use std::ffi::CStr;
 use log::{error, warn, info};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime;
+use tokio::prelude::*;
 use tokio_tungstenite::{connect_async, accept_async};
 use futures::executor::block_on;
 use futures_util::{SinkExt, StreamExt, future};
@@ -382,11 +384,77 @@ impl PollnetContext {
                             },
                         };
                     }
-                    info!("Pollnet: closing socket!");
+                    info!("Closing websocket!");
                     ws_stream.close(None).await.unwrap_or_default(); // if this errors we don't care
                 },
                 Err(err) => {
                     error!("WS client connection error: {}", err);
+                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
+                }
+            }
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
+        new_handle
+    }
+
+    fn open_tcp(&mut self, addr: String) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        self.rt_handle.spawn(async move {
+            info!("TCP client attempting to connect to {}", addr);
+            let mut buf = [0; 65536];
+            match TcpStream::connect(addr).await {
+                Ok(mut tcp_stream) => {
+                    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+                    loop {
+                        tokio::select! {
+                            from_c_message = rx_to_sock.recv() => {
+                                match from_c_message {
+                                    Some(SocketMessage::Message(msg)) => {
+                                        tcp_stream.write_all(msg.as_bytes()).await.expect("TCP send error");
+                                    },
+                                    Some(SocketMessage::BinaryMessage(msg)) => {
+                                        tcp_stream.write_all(&msg).await.expect("TCP send error");
+                                    },
+                                    _ => break
+                                }
+                            },
+                            from_sock_message = tcp_stream.read(&mut buf) => {
+                                match from_sock_message {
+                                    Ok(0) => {
+                                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
+                                        break;
+                                    },
+                                    Ok(n) => {
+                                        // TODO: can we avoid these copies? Does it matter?
+                                        let submessage = buf[0..n].to_vec();
+                                        tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
+                                    },
+                                    Err(err) => {
+                                        tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
+                                        break;
+                                    }
+                                }
+                            },
+                        };
+                    }
+                    info!("Closing TCP socket!");
+                    tcp_stream.shutdown(Shutdown::Both).unwrap_or_default(); // if this errors we don't care
+                },
+                Err(err) => {
+                    error!("TCP client connection error: {}", err);
                     tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
                 }
             }

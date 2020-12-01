@@ -20,7 +20,7 @@ env_logger = "0.8.2"
 
 [dependencies.tokio]
 version = "*"
-features = ["sync", "macros"]
+features = ["sync", "macros", "net"]
 
 [lib]
 name = "pollnet"
