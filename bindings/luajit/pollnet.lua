@@ -263,6 +263,14 @@ local function listen_ws(addr, scratch_size)
   return Socket():listen_ws(addr, scratch_size)
 end
 
+local function open_tcp(addr, scratch_size)
+  return Socket():open_tcp(addr, scratch_size)
+end
+
+local function listen_tcp(addr, scratch_size)
+  return Socket():listen_tcp(addr, scratch_size)
+end
+
 local function serve_http(addr, dir, scratch_size)
   return Socket():serve_http(addr, dir, scratch_size)
 end
@@ -287,6 +295,8 @@ return {
   shutdown = shutdown_ctx, 
   open_ws = open_ws, 
   listen_ws = listen_ws,
+  open_tcp = open_tcp,
+  listen_tcp = listen_tcp,
   serve_http = serve_http,
   http_get = http_get,
   http_post = http_post,
