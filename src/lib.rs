@@ -106,14 +106,17 @@ async fn accept_ws(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::sync:
                         match from_c_message {
                             Some(SocketMessage::Message(msg)) => {
                                 ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
-                            }
+                            },
+                            Some(SocketMessage::BinaryMessage(msg)) => {
+                                ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
+                            },
                             _ => break
                         }
                     },
                     from_sock_message = ws_stream.next() => {
                         match from_sock_message {
                             Some(Ok(msg)) => {
-                                tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("TX error on socket message");
+                                tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
                             },
                             Some(Err(msg)) => {
                                 tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
@@ -463,14 +466,17 @@ impl PollnetContext {
                                 match from_c_message {
                                     Some(SocketMessage::Message(msg)) => {
                                         ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
-                                    }
+                                    },
+                                    Some(SocketMessage::BinaryMessage(msg)) => {
+                                        ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
+                                    },
                                     _ => break
                                 }
                             },
                             from_sock_message = ws_stream.next() => {
                                 match from_sock_message {
                                     Some(Ok(msg)) => {
-                                        tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("TX error on socket message");
+                                        tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
                                     },
                                     Some(Err(msg)) => {
                                         tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
