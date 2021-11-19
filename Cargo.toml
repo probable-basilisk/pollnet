@@ -10,13 +10,13 @@ tungstenite = {version = "*", features = ["tls"]}
 futures = "*"
 url = "*"
 futures-util = "*"
-hyper = "0.13.6"
-hyper-staticfile = "0.5.3"
-http = "0.2"
-nanoid = "0.3.0"
-reqwest = "0.10"
-log = "0.4.0"
-env_logger = "0.8.2"
+hyper = {version = "*", features = ["server"]}
+hyper-staticfile = "*"
+http = "*"
+nanoid = "*"
+reqwest = "*"
+log = "*"
+env_logger = "*"
 
 [dependencies.tokio]
 version = "*"

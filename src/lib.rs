@@ -5,7 +5,6 @@ use std::sync::RwLock;
 use std::sync::Arc;
 use std::thread;
 use std::net::SocketAddr;
-use std::net::Shutdown;
 use std::io::Error as IoError;
 use std::path::Path;
 use std::os::raw::c_char;
@@ -13,7 +12,7 @@ use std::ffi::CStr;
 use log::{error, warn, info};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime;
-use tokio::prelude::*;
+use tokio::io::AsyncWriteExt;
 use tokio_tungstenite::{connect_async, accept_async};
 use futures::executor::block_on;
 use futures_util::{SinkExt, StreamExt, future};
@@ -163,17 +162,16 @@ async fn accept_tcp(mut tcp_stream: TcpStream, addr: SocketAddr, outer_tx: Optio
                     _ => break
                 }
             },
-            from_sock_message = tcp_stream.read(&mut buf) => {
-                match from_sock_message {
-                    Ok(0) => {
-                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
-                        break;
-                    },
+            _ = tcp_stream.readable() => {
+                match tcp_stream.try_read(&mut buf){
                     Ok(n) => {
                         // TODO: can we avoid these copies? Does it matter?
                         let submessage = buf[0..n].to_vec();
                         tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
-                    },
+                    }
+                    Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
+                        // no effect?
+                    }
                     Err(err) => {
                         tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
                         break;
@@ -183,7 +181,7 @@ async fn accept_tcp(mut tcp_stream: TcpStream, addr: SocketAddr, outer_tx: Optio
         };
     }
     info!("Closing TCP socket!");
-    tcp_stream.shutdown(Shutdown::Both).unwrap_or_default(); // if this errors we don't care
+    tcp_stream.shutdown().await.unwrap_or_default(); // if this errors we don't care
 }
 
 async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>) -> Result<Response<Body>, IoError> {
@@ -218,8 +216,7 @@ impl PollnetContext {
         let shutdown_tx = Some(shutdown_tx);
 
         let thread = Some(thread::spawn(move || {
-            let mut rt = runtime::Builder::new()
-                    .basic_scheduler()
+            let rt = runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("Unable to create the runtime");
@@ -234,7 +231,7 @@ impl PollnetContext {
             rt.block_on(async {
                 shutdown_rx.await.unwrap();
                 // uh let's just put in a 'safety' delay to shut everything down?
-                tokio::time::delay_for(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             });
             rt.shutdown_timeout(std::time::Duration::from_millis(200));
             info!("tokio runtime shutdown");
@@ -345,7 +342,7 @@ impl PollnetContext {
 
         self.rt_handle.spawn(async move {
             info!("WS server spawned");
-            let mut listener = match TcpListener::bind(&addr).await {
+            let listener = match TcpListener::bind(&addr).await {
                 Ok(listener) => listener,
                 Err(tcp_err) => {
                     tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
@@ -397,7 +394,7 @@ impl PollnetContext {
 
         self.rt_handle.spawn(async move {
             info!("TCP server spawned");
-            let mut listener = match TcpListener::bind(&addr).await {
+            let listener = match TcpListener::bind(&addr).await {
                 Ok(listener) => listener,
                 Err(tcp_err) => {
                     tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
@@ -534,17 +531,16 @@ impl PollnetContext {
                                     _ => break
                                 }
                             },
-                            from_sock_message = tcp_stream.read(&mut buf) => {
-                                match from_sock_message {
-                                    Ok(0) => {
-                                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
-                                        break;
-                                    },
+                            _ = tcp_stream.readable() => {
+                                match tcp_stream.try_read(&mut buf){
                                     Ok(n) => {
                                         // TODO: can we avoid these copies? Does it matter?
                                         let submessage = buf[0..n].to_vec();
                                         tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
-                                    },
+                                    }
+                                    Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
+                                        // no effect?
+                                    }
                                     Err(err) => {
                                         tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
                                         break;
@@ -554,7 +550,7 @@ impl PollnetContext {
                         };
                     }
                     info!("Closing TCP socket!");
-                    tcp_stream.shutdown(Shutdown::Both).unwrap_or_default(); // if this errors we don't care
+                    tcp_stream.shutdown().await.unwrap_or_default(); // if this errors we don't care
                 },
                 Err(err) => {
                     error!("TCP client connection error: {}", err);
