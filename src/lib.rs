@@ -12,6 +12,7 @@ use std::ffi::CStr;
 use log::{error, warn, info};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime;
+use tokio::io::AsyncWriteExt;
 use tokio_tungstenite::{connect_async, accept_async};
 use futures::executor::block_on;
 use futures_util::{SinkExt, StreamExt, future};
@@ -80,7 +81,13 @@ pub struct PollnetContext {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
 }
 
-async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::sync::mpsc::Sender<SocketMessage>) {//rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
+#[derive(Debug)]
+enum RecvError {
+    Empty,
+    Disconnected,
+}
+
+async fn accept_ws(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::sync::mpsc::Sender<SocketMessage>) {//rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
     let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
     let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -99,14 +106,17 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
                         match from_c_message {
                             Some(SocketMessage::Message(msg)) => {
                                 ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
-                            }
+                            },
+                            Some(SocketMessage::BinaryMessage(msg)) => {
+                                ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
+                            },
                             _ => break
                         }
                     },
                     from_sock_message = ws_stream.next() => {
                         match from_sock_message {
                             Some(Ok(msg)) => {
-                                tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("TX error on socket message");
+                                tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
                             },
                             Some(Err(msg)) => {
                                 tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
@@ -126,6 +136,55 @@ async fn accept_stream(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::s
             tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
         }
     }
+}
+
+async fn accept_tcp(mut tcp_stream: TcpStream, addr: SocketAddr, outer_tx: Option<std::sync::mpsc::Sender<SocketMessage>>) {
+    let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+    let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+    if let Some(tx) = outer_tx {
+        tx.send(SocketMessage::NewClient(ClientConn{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            id: addr.to_string(),
+        })).expect("this shouldn't ever break?");
+    }
+
+    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+    let mut buf = [0; 65536];
+    loop {
+        tokio::select! {
+            from_c_message = rx_to_sock.recv() => {
+                match from_c_message {
+                    Some(SocketMessage::Message(msg)) => {
+                        tcp_stream.write_all(msg.as_bytes()).await.expect("TCP send error");
+                    },
+                    Some(SocketMessage::BinaryMessage(msg)) => {
+                        tcp_stream.write_all(&msg).await.expect("TCP send error");
+                    },
+                    _ => break
+                }
+            },
+            _ = tcp_stream.readable() => {
+                match tcp_stream.try_read(&mut buf){
+                    Ok(n) => {
+                        // TODO: can we avoid these copies? Does it matter?
+                        let submessage = buf[0..n].to_vec();
+                        tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
+                    }
+                    Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
+                        // no effect?
+                    }
+                    Err(err) => {
+                        tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
+                        break;
+                    }
+                }
+            },
+        };
+    }
+    info!("Closing TCP socket!");
+    tcp_stream.shutdown().await.unwrap_or_default(); // if this errors we don't care
 }
 
 async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>) -> Result<Response<Body>, IoError> {
@@ -160,8 +219,7 @@ impl PollnetContext {
         let shutdown_tx = Some(shutdown_tx);
 
         let thread = Some(thread::spawn(move || {
-            let mut rt = runtime::Builder::new()
-                    .basic_scheduler()
+            let rt = runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("Unable to create the runtime");
@@ -176,7 +234,7 @@ impl PollnetContext {
             rt.block_on(async {
                 shutdown_rx.await.unwrap();
                 // uh let's just put in a 'safety' delay to shut everything down?
-                tokio::time::delay_for(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             });
             rt.shutdown_timeout(std::time::Duration::from_millis(200));
             info!("tokio runtime shutdown");
@@ -191,10 +249,14 @@ impl PollnetContext {
         }
     }
 
+    fn _next_handle_that_satisfies_the_borrow_checker(next_handle: &mut u32) -> u32 {
+        let new_handle: u32 = *next_handle;
+        *next_handle += 1;
+        new_handle   
+    }
+
     fn _next_handle(&mut self) -> u32 {
-        let new_handle = self.next_handle;
-        self.next_handle += 1;
-        new_handle
+        PollnetContext::_next_handle_that_satisfies_the_borrow_checker(&mut self.next_handle)
     }
 
     fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> u32 {
@@ -283,12 +345,13 @@ impl PollnetContext {
 
         self.rt_handle.spawn(async move {
             info!("WS server spawned");
-            let listener = TcpListener::bind(&addr).await;
-            if let Err(tcp_err) = listener {
-                tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
-                return;
-            }
-            let mut listener = listener.unwrap();
+            let listener = match TcpListener::bind(&addr).await {
+                Ok(listener) => listener,
+                Err(tcp_err) => {
+                    tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
+                    return;
+                }
+            };
             info!("WS server waiting for connections on {}", addr);
             tx_from_sock.send(SocketMessage::Connect).expect("oh boy");                    
             loop {
@@ -302,7 +365,59 @@ impl PollnetContext {
                     new_client = listener.accept() => {
                         match new_client {
                             Ok((tcp_stream, addr)) => {
-                                tokio::spawn(accept_stream(tcp_stream, addr, tx_from_sock.clone()));
+                                tokio::spawn(accept_ws(tcp_stream, addr, tx_from_sock.clone()));
+                            },
+                            Err(msg) => {
+                                tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                                break;
+                            }
+                        }
+                    },
+                };
+            }
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
+        new_handle
+    }
+
+    fn listen_tcp(&mut self, addr: String) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        self.rt_handle.spawn(async move {
+            info!("TCP server spawned");
+            let listener = match TcpListener::bind(&addr).await {
+                Ok(listener) => listener,
+                Err(tcp_err) => {
+                    tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
+                    return;
+                }
+            };
+            info!("TCP server waiting for connections on {}", addr);
+            tx_from_sock.send(SocketMessage::Connect).expect("oh boy");                    
+            loop {
+                tokio::select! {
+                    from_c_message = rx_to_sock.recv() => {
+                        match from_c_message {
+                            Some(SocketMessage::Message(_msg)) => {}, // server socket ignores sends
+                            _ => break
+                        }
+                    },
+                    new_client = listener.accept() => {
+                        match new_client {
+                            Ok((tcp_stream, addr)) => {
+                                tokio::spawn(accept_tcp(tcp_stream, addr, Some(tx_from_sock.clone())));
                             },
                             Err(msg) => {
                                 tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
@@ -351,14 +466,17 @@ impl PollnetContext {
                                 match from_c_message {
                                     Some(SocketMessage::Message(msg)) => {
                                         ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
-                                    }
+                                    },
+                                    Some(SocketMessage::BinaryMessage(msg)) => {
+                                        ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
+                                    },
                                     _ => break
                                 }
                             },
                             from_sock_message = ws_stream.next() => {
                                 match from_sock_message {
                                     Some(Ok(msg)) => {
-                                        tx_from_sock.send(SocketMessage::Message(msg.to_string())).expect("TX error on socket message");
+                                        tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
                                     },
                                     Some(Err(msg)) => {
                                         tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
@@ -372,7 +490,7 @@ impl PollnetContext {
                             },
                         };
                     }
-                    info!("Pollnet: closing socket!");
+                    info!("Closing websocket!");
                     ws_stream.close(None).await.unwrap_or_default(); // if this errors we don't care
                 },
                 Err(err) => {
@@ -396,27 +514,53 @@ impl PollnetContext {
         new_handle
     }
 
-    fn open_http_get_simple(&mut self, url: String) -> u32 {
-        let (tx_to_sock, mut _rx_to_sock) = tokio::sync::mpsc::channel(100);
+    fn open_tcp(&mut self, addr: String) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            info!("HTTP GET: {}", url);
-            match reqwest::get(&url).await{
-                Ok(resp) => {
-                    tx_from_sock.send(SocketMessage::Message(resp.status().to_string())).expect("TX error on http get");
-                    match resp.bytes().await {
-                        Ok(body) => {
-                            tx_from_sock.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
-                        },
-                        Err(body_err) => {
-                            tx_from_sock.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
-                        }
+            info!("TCP client attempting to connect to {}", addr);
+            let mut buf = [0; 65536];
+            match TcpStream::connect(addr).await {
+                Ok(mut tcp_stream) => {
+                    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+                    loop {
+                        tokio::select! {
+                            from_c_message = rx_to_sock.recv() => {
+                                match from_c_message {
+                                    Some(SocketMessage::Message(msg)) => {
+                                        tcp_stream.write_all(msg.as_bytes()).await.expect("TCP send error");
+                                    },
+                                    Some(SocketMessage::BinaryMessage(msg)) => {
+                                        tcp_stream.write_all(&msg).await.expect("TCP send error");
+                                    },
+                                    _ => break
+                                }
+                            },
+                            _ = tcp_stream.readable() => {
+                                match tcp_stream.try_read(&mut buf){
+                                    Ok(n) => {
+                                        // TODO: can we avoid these copies? Does it matter?
+                                        let submessage = buf[0..n].to_vec();
+                                        tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
+                                    }
+                                    Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
+                                        // no effect?
+                                    }
+                                    Err(err) => {
+                                        tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
+                                        break;
+                                    }
+                                }
+                            },
+                        };
                     }
+                    info!("Closing TCP socket!");
+                    tcp_stream.shutdown().await.unwrap_or_default(); // if this errors we don't care
                 },
                 Err(err) => {
-                    error!("HTTP GET failed: {}", err);
-                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on http get error");
+                    error!("TCP client connection error: {}", err);
+                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
                 }
             }
         });
@@ -435,32 +579,98 @@ impl PollnetContext {
         new_handle
     }
 
-    fn open_http_post_simple(&mut self, url: String, content_type: String, body: Vec<u8>) -> u32 {
-        let (tx_to_sock, mut _rx_to_sock) = tokio::sync::mpsc::channel(100);
+    async fn _handle_get(url: String, dest: std::sync::mpsc::Sender<SocketMessage>) {
+        info!("HTTP GET: {}", url);
+        let resp = match reqwest::get(&url).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                error!("HTTP GET failed: {}", err);
+                dest.send(SocketMessage::Error(err.to_string())).expect("TX error on http post error");
+                return;
+            }
+        };
+        match resp.bytes().await {
+            Ok(body) => {
+                dest.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
+            },
+            Err(body_err) => {
+                dest.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
+            }
+        };
+    }
+
+    fn open_http_get_simple(&mut self, url: String) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            info!("HTTP POST: {} (w/ {})", url, content_type);
-            let client = reqwest::Client::new();
-            match client.post(&url)
-                        .header(reqwest::header::CONTENT_TYPE, content_type)
-                        .body(body)
-                        .send()
-                        .await {
-                Ok(resp) => {
-                    tx_from_sock.send(SocketMessage::Message(resp.status().to_string())).expect("TX error on http post");
-                    match resp.bytes().await {
-                        Ok(body) => {
-                            tx_from_sock.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
-                        },
-                        Err(body_err) => {
-                            tx_from_sock.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
+            let get_handler = PollnetContext::_handle_get(url, tx_from_sock);
+            tokio::pin!(get_handler);
+            loop {
+                tokio::select! {
+                    _ = &mut get_handler => break,
+                    from_c_message = rx_to_sock.recv() => {
+                        match from_c_message {
+                            Some(SocketMessage::Disconnect) => break,
+                            _ => ()
                         }
-                    }
-                },
-                Err(err) => {
-                    error!("HTTP POST failed: {}", err);
-                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on http post error");
+                    },
+                }
+            }
+        });
+
+        let socket = Box::new(PollnetSocket{
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            status: SocketStatus::OPENING,
+            message: None,
+            error: None,
+            last_client_handle: 0
+        });
+        let new_handle = self._next_handle();
+        self.sockets.insert(new_handle, socket);
+
+        new_handle
+    }
+
+    async fn _handle_post(url: String, content_type: String, body: Vec<u8>, dest: std::sync::mpsc::Sender<SocketMessage>) {
+        info!("HTTP POST: {} (w/ {})", url, content_type);
+        let client = reqwest::Client::new();
+        let resp = match client.post(&url).header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body).send().await {
+            Ok(resp) => resp,
+            Err(err) => {
+                error!("HTTP POST failed: {}", err);
+                dest.send(SocketMessage::Error(err.to_string())).expect("TX error on http post error");
+                return;
+            }
+        };
+        match resp.bytes().await {
+            Ok(body) => {
+                dest.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
+            },
+            Err(body_err) => {
+                dest.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
+            }
+        };
+    }
+
+    fn open_http_post_simple(&mut self, url: String, content_type: String, body: Vec<u8>) -> u32 {
+        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+
+        self.rt_handle.spawn(async move {
+            let post_handler = PollnetContext::_handle_post(url, content_type, body, tx_from_sock);
+            tokio::pin!(post_handler);
+            loop {
+                tokio::select! {
+                    _ = &mut post_handler => break,
+                    from_c_message = rx_to_sock.recv() => {
+                        match from_c_message {
+                            Some(SocketMessage::Disconnect) => break,
+                            _ => ()
+                        }
+                    },
                 }
             }
         });
@@ -522,6 +732,17 @@ impl PollnetContext {
         }
     }
 
+    fn send_binary(&mut self, handle: u32, msg: Vec<u8>) {
+        if let Some(sock) = self.sockets.get_mut(&handle) {
+            match sock.status {
+                SocketStatus::OPEN | SocketStatus::OPENING => {
+                    sock.tx.try_send(SocketMessage::BinaryMessage(msg)).unwrap_or_default()
+                },
+                _ => (),
+            };
+        }
+    }
+
     fn add_virtual_file(&mut self, handle: u32, filename: String, filedata: Vec<u8>) {
         if let Some(sock) = self.sockets.get_mut(&handle) {
             match sock.status {
@@ -544,19 +765,31 @@ impl PollnetContext {
         }
     }
 
-    fn update(&mut self, handle: u32) -> SocketResult {
-        let sock = self.sockets.get_mut(&handle).unwrap();
+    fn update(&mut self, handle: u32, blocking: bool) -> SocketResult {
+        let sock = match self.sockets.get_mut(&handle) {
+            Some(sock) => sock,
+            None => return SocketResult::INVALIDHANDLE,
+        };
 
         match sock.status {
             SocketStatus::OPEN | SocketStatus::OPENING => {
                 // This block is apparently impossible to move into a helper function
                 // for borrow checker "reasons"
-                match sock.rx.try_recv() {
+                let result = if blocking {
+                    sock.rx.recv().map_err(|_err| RecvError::Disconnected)
+                } else {
+                    sock.rx.try_recv().map_err(|err| match err {
+                        std::sync::mpsc::TryRecvError::Empty => RecvError::Empty,
+                        std::sync::mpsc::TryRecvError::Disconnected => RecvError::Disconnected,
+                    })
+                };
+
+                match result {
                     Ok(SocketMessage::Connect) => {
                         sock.status = SocketStatus::OPEN;
                         SocketResult::OPENING
                     },
-                    Ok(SocketMessage::Disconnect) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Ok(SocketMessage::Disconnect) | Err(RecvError::Disconnected) => {
                         sock.status = SocketStatus::CLOSED;
                         SocketResult::CLOSED
                     },
@@ -575,8 +808,7 @@ impl PollnetContext {
                     },
                     Ok(SocketMessage::NewClient(conn)) => {
                         // can't use self._next_handle() either for questionable reasons
-                        let new_handle = self.next_handle;
-                        self.next_handle += 1;
+                        let new_handle = PollnetContext::_next_handle_that_satisfies_the_borrow_checker(&mut self.next_handle);
                         sock.last_client_handle = new_handle;
                         sock.message = Some(conn.id.into_bytes());
                         let client_socket = Box::new(PollnetSocket{
@@ -591,7 +823,7 @@ impl PollnetContext {
                         SocketResult::NEWCLIENT
                     },
                     Ok(_) => SocketResult::NODATA,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => SocketResult::NODATA,
+                    Err(RecvError::Empty) => SocketResult::NODATA,
                 }
             },
             SocketStatus::CLOSED => SocketResult::CLOSED,
@@ -614,6 +846,14 @@ impl PollnetContext {
     }
 }
 
+fn c_str_to_string(s: *const c_char) -> String {
+    unsafe { CStr::from_ptr(s).to_string_lossy().into_owned() }
+}
+
+fn c_data_to_vec(data: *const u8, datasize: u32) -> Vec<u8> {
+    unsafe { std::slice::from_raw_parts(data, datasize as usize).to_vec() }
+}
+
 #[no_mangle]
 pub extern fn pollnet_init() -> *mut PollnetContext {
     Box::into_raw(Box::new(PollnetContext::new()))
@@ -633,46 +873,60 @@ pub extern fn pollnet_shutdown(ctx: *mut PollnetContext) {
 
 #[no_mangle]
 pub extern fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u32 {
-    let url = unsafe { CStr::from_ptr(url).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let url = c_str_to_string(url);
     ctx.open_ws(url)
 }
 
 #[no_mangle]
 pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
     ctx.listen_ws(addr)
 }
 
 #[no_mangle]
-pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
+pub extern fn pollnet_open_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    ctx.open_tcp(addr)
+}
+
+#[no_mangle]
+pub extern fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+    let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    ctx.listen_tcp(addr)
+}
+
+#[no_mangle]
+pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+    let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
     ctx.open_http_get_simple(addr)
 }
 
 #[no_mangle]
 pub extern fn pollnet_simple_http_post(ctx: *mut PollnetContext, addr: *const c_char, content_type: *const c_char, bodydata: *const u8, bodysize: u32) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
-    let content_type = unsafe { CStr::from_ptr(content_type).to_string_lossy().into_owned() };
-    let body = unsafe { std::slice::from_raw_parts(bodydata, bodysize as usize).to_vec() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    let content_type = c_str_to_string(content_type);
+    let body = c_data_to_vec(bodydata, bodysize);
     ctx.open_http_post_simple(addr, content_type, body)
 }
 
 #[no_mangle]
 pub extern fn pollnet_serve_static_http(ctx: *mut PollnetContext, addr: *const c_char, serve_dir: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
-    let serve_dir = unsafe { CStr::from_ptr(serve_dir).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
+    let serve_dir = c_str_to_string(serve_dir);
     ctx.serve_http(addr, Some(serve_dir))
 }
 
 #[no_mangle]
 pub extern fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
-    let addr = unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() };
     let ctx = unsafe{&mut *ctx};
+    let addr = c_str_to_string(addr);
     ctx.serve_http(addr, None)
 }
 
@@ -701,84 +955,98 @@ pub extern fn pollnet_status(ctx: *mut PollnetContext, handle: u32) -> SocketSta
 #[no_mangle]
 pub extern fn pollnet_send(ctx: *mut PollnetContext, handle: u32, msg: *const c_char) {
     let ctx = unsafe{&mut *ctx};
-    let msg = unsafe { CStr::from_ptr(msg).to_string_lossy().into_owned() };
+    let msg = c_str_to_string(msg);
     ctx.send(handle, msg)
+}
+
+#[no_mangle]
+pub extern fn pollnet_send_binary(ctx: *mut PollnetContext, handle: u32, msg: *const u8, msgsize: u32) {
+    let ctx = unsafe{&mut *ctx};
+    let msg = c_data_to_vec(msg, msgsize);
+    ctx.send_binary(handle, msg)
 }
 
 #[no_mangle]
 pub extern fn pollnet_add_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char, filedata: *const u8, datasize: u32) {
     let ctx = unsafe{&mut *ctx};
-    let filename = unsafe { CStr::from_ptr(filename).to_string_lossy().into_owned() };
-    let filedata = unsafe { std::slice::from_raw_parts(filedata, datasize as usize).to_vec() };
+    let filename = c_str_to_string(filename);
+    let filedata = c_data_to_vec(filedata, datasize);
     ctx.add_virtual_file(handle, filename, filedata)
 }
 
 #[no_mangle]
 pub extern fn pollnet_remove_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char) {
     let ctx = unsafe{&mut *ctx};
-    let filename = unsafe { CStr::from_ptr(filename).to_string_lossy().into_owned() };
+    let filename = c_str_to_string(filename);
     ctx.remove_virtual_file(handle, filename)
 }
 
 #[no_mangle]
 pub extern fn pollnet_update(ctx: *mut PollnetContext, handle: u32) -> SocketResult {
     let ctx = unsafe{&mut *ctx};
-    ctx.update(handle)
+    ctx.update(handle, false)
+}
+
+#[no_mangle]
+pub extern fn pollnet_update_blocking(ctx: *mut PollnetContext, handle: u32) -> SocketResult {
+    let ctx = unsafe{&mut *ctx};
+    ctx.update(handle, true)
 }
 
 #[no_mangle]
 pub extern fn pollnet_get(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, dest_size: u32) -> i32 {
     let ctx = unsafe{&mut *ctx};
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        match socket.message.take() {
-            Some(msg) => {
-                let ncopy = msg.len();
-                if ncopy < (dest_size as usize) {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
-                    }
-                    ncopy as i32
-                } else {
-                    0
+    let socket = match ctx.sockets.get_mut(&handle) {
+        Some(socket) => socket,
+        None => return -1,
+    };
+
+    match socket.message.take() {
+        Some(msg) => {
+            let ncopy = msg.len();
+            if ncopy < (dest_size as usize) {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
                 }
-            },
-            None => 0,
-        }
-    } else {
-        -1
+                ncopy as i32
+            } else {
+                0
+            }
+        },
+        None => 0,
     }
 }
 
 #[no_mangle]
 pub extern fn pollnet_get_connected_client_handle(ctx: *mut PollnetContext, handle: u32) -> u32 {
     let ctx = unsafe{&mut *ctx};
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        socket.last_client_handle
-    } else {
-        0
+    match ctx.sockets.get_mut(&handle) {
+        Some(socket) => socket.last_client_handle,
+        None => 0,
     }
 }
 
 #[no_mangle]
 pub extern fn pollnet_get_error(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, dest_size: u32) -> i32 {
     let ctx = unsafe{&mut *ctx};
-    if let Some(socket) = ctx.sockets.get_mut(&handle) {
-        match socket.error.take() {
-            Some(msg) => {
-                let ncopy = msg.len();
-                if ncopy < (dest_size as usize) {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
-                    }
-                    ncopy as i32
-                } else {
-                    0
+    let socket = match ctx.sockets.get_mut(&handle) {
+        Some(socket) => socket,
+        None => return -1,
+    };
+
+    match socket.error.take() {
+        Some(msg) => {
+            let ncopy = msg.len();
+            if ncopy < (dest_size as usize) {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
                 }
-            },
-            None => 0,
-        }
-    } else {
-        -1
+                ncopy as i32
+            } else {
+                0
+            }
+        },
+        None => 0,
     }
 }
 
