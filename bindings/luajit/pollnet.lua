@@ -62,6 +62,7 @@ unsigned int pollnet_simple_http_post(struct pnctx* ctx, const char* url, const 
 void pollnet_close(struct pnctx* ctx, unsigned int handle);
 void pollnet_close_all(struct pnctx* ctx);
 void pollnet_send(struct pnctx* ctx, unsigned int handle, const char* msg);
+void pollnet_send_binary(struct pnctx* ctx, unsigned int handle, const char* msg, unsigned int msgsize);
 unsigned int pollnet_update(struct pnctx* ctx, unsigned int handle);
 unsigned int pollnet_update_blocking(struct pnctx* ctx, unsigned int handle);
 int pollnet_get(struct pnctx* ctx, unsigned int handle, char* dest, unsigned int dest_size);
