@@ -4,6 +4,7 @@ within game-embedded LuaJIT environments (e.g., mods)
 
 # Features
 * Websocket client and server (both ws:// and wss:// for clients)
+* TCP client and server
 * bare-bones HTTP client: simple GET/POST
 * bare-bones HTTP server: serve static files from disk or from memory
 
