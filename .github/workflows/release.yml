@@ -32,6 +32,12 @@ jobs:
       # Just directly invoke cargo
       - name: Cargo Build
         run: cargo build --release
+        
+      - name: Cargo Build (Windows 32 bit)
+        if: matrix.os == 'windows-latest'
+        run: |
+          rustup target add i686-pc-windows-msvc
+          cargo build --target=i686-pc-windows-msvc --release
 
       - name: Zip (linux)
         if: matrix.os == 'ubuntu-latest'
@@ -44,8 +50,11 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           mkdir lib
+          mkdir lib32
           cp target/release/pollnet.dll lib/
           cp target/release/pollnet.dll.lib lib/
+          cp target/i686-pc-windows-msvc/release/pollnet.dll lib32/
+          cp target/i686-pc-windows-msvc/release/pollnet.dll.lib lib32/
           7z a "pollnet_${{ matrix.os }}.zip" lib bindings LICENSE README.md
           
       - name: Publish Release
