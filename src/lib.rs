@@ -204,6 +204,37 @@ async fn handle_http_request<B>(req: Request<B>, static_: Option<Static>, virtua
     }
 }
 
+async fn _handle_http_response(resp: reqwest::Result<reqwest::Response>, body_only: bool, dest: std::sync::mpsc::Sender<SocketMessage>) {
+    let resp = match resp {
+        Ok(resp) => resp,
+        Err(err) => {
+            error!("HTTP failed: {}", err);
+            dest.send(SocketMessage::Error(err.to_string())).expect("TX error sending error!");
+            return;
+        }
+    };
+    if !body_only {
+        let statuscode = resp.status().to_string();
+        dest.send(SocketMessage::BinaryMessage(statuscode.into())).expect("TX error on http status");
+        let mut headers = String::new();
+        for (key, value) in resp.headers().iter() {
+            headers.push_str(&key.to_string());
+            headers.push_str(":");
+            headers.push_str(value.to_str().unwrap_or("MALFORMED"));
+            headers.push_str(";\n");
+        }
+        dest.send(SocketMessage::BinaryMessage(headers.into())).expect("TX error on http headers");
+    };
+    match resp.bytes().await {
+        Ok(body) => {
+            dest.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
+        },
+        Err(body_err) => {
+            dest.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
+        }
+    };
+}
+
 impl PollnetContext {
     fn new() -> PollnetContext {
         match env_logger::try_init() {
@@ -576,32 +607,17 @@ impl PollnetContext {
         new_handle
     }
 
-    async fn _handle_get(url: String, dest: std::sync::mpsc::Sender<SocketMessage>) {
+    async fn _handle_get(url: String, body_only: bool, dest: std::sync::mpsc::Sender<SocketMessage>) {
         info!("HTTP GET: {}", url);
-        let resp = match reqwest::get(&url).await {
-            Ok(resp) => resp,
-            Err(err) => {
-                error!("HTTP GET failed: {}", err);
-                dest.send(SocketMessage::Error(err.to_string())).expect("TX error on http post error");
-                return;
-            }
-        };
-        match resp.bytes().await {
-            Ok(body) => {
-                dest.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
-            },
-            Err(body_err) => {
-                dest.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
-            }
-        };
+        _handle_http_response(reqwest::get(&url).await, body_only, dest).await;
     }
 
-    fn open_http_get_simple(&mut self, url: String) -> u32 {
+    fn open_http_get_simple(&mut self, url: String, body_only: bool) -> u32 {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            let get_handler = PollnetContext::_handle_get(url, tx_from_sock);
+            let get_handler = PollnetContext::_handle_get(url, body_only, tx_from_sock);
             tokio::pin!(get_handler);
             loop {
                 tokio::select! {
@@ -630,34 +646,24 @@ impl PollnetContext {
         new_handle
     }
 
-    async fn _handle_post(url: String, content_type: String, body: Vec<u8>, dest: std::sync::mpsc::Sender<SocketMessage>) {
+    async fn _handle_post(url: String, ret_body_only: bool, content_type: String, body: Vec<u8>, dest: std::sync::mpsc::Sender<SocketMessage>) {
         info!("HTTP POST: {} (w/ {})", url, content_type);
         let client = reqwest::Client::new();
-        let resp = match client.post(&url).header(reqwest::header::CONTENT_TYPE, content_type)
-            .body(body).send().await {
-            Ok(resp) => resp,
-            Err(err) => {
-                error!("HTTP POST failed: {}", err);
-                dest.send(SocketMessage::Error(err.to_string())).expect("TX error on http post error");
-                return;
-            }
-        };
-        match resp.bytes().await {
-            Ok(body) => {
-                dest.send(SocketMessage::BinaryMessage(body.to_vec())).expect("TX error on http body");
-            },
-            Err(body_err) => {
-                dest.send(SocketMessage::Error(body_err.to_string())).expect("TX error on http body error");
-            }
-        };
+        let resp = client
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send().await;
+        _handle_http_response(resp, ret_body_only, dest).await;
     }
 
-    fn open_http_post_simple(&mut self, url: String, content_type: String, body: Vec<u8>) -> u32 {
+    fn open_http_post_simple(&mut self, url: String, ret_body_only: bool, content_type: String, body: Vec<u8>) -> u32 {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            let post_handler = PollnetContext::_handle_post(url, content_type, body, tx_from_sock);
+            let post_handler = PollnetContext::_handle_post(
+                url, ret_body_only, content_type, body, tx_from_sock);
             tokio::pin!(post_handler);
             loop {
                 tokio::select! {
@@ -897,19 +903,19 @@ pub extern fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *const c_char) 
 }
 
 #[no_mangle]
-pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char, body_only: u32) -> u32 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
-    ctx.open_http_get_simple(addr)
+    ctx.open_http_get_simple(addr, body_only > 0)
 }
 
 #[no_mangle]
-pub extern fn pollnet_simple_http_post(ctx: *mut PollnetContext, addr: *const c_char, content_type: *const c_char, bodydata: *const u8, bodysize: u32) -> u32 {
+pub extern fn pollnet_simple_http_post(ctx: *mut PollnetContext, addr: *const c_char, body_only: u32, content_type: *const c_char, bodydata: *const u8, bodysize: u32) -> u32 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
     let content_type = c_str_to_string(content_type);
     let body = c_data_to_vec(bodydata, bodysize);
-    ctx.open_http_post_simple(addr, content_type, body)
+    ctx.open_http_post_simple(addr, body_only > 0, content_type, body)
 }
 
 #[no_mangle]
