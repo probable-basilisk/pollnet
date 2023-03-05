@@ -5,8 +5,8 @@ authors = ["probable-basilisk <basilisk@mtknn.com>"]
 edition = "2021"
 
 [dependencies]
-tokio-tungstenite = {version = "*", features = ["tls"]}
-tungstenite = {version = "*", features = ["tls"]}
+tokio-tungstenite = {version = "^0.18.0", features = ["native-tls"]}
+tungstenite = {version = "^0.18.0", features = ["native-tls"]}
 futures = "*"
 url = "*"
 futures-util = "*"
@@ -16,11 +16,15 @@ http = "*"
 nanoid = "*"
 reqwest = "*"
 log = "*"
-env_logger = "*"
 
 [dependencies.tokio]
 version = "*"
 features = ["sync", "macros", "net"]
+
+[dependencies.env_logger]
+version = "0.9.0"
+default-features = false
+features = ["atty", "humantime", "termcolor"]
 
 [lib]
 name = "pollnet"
