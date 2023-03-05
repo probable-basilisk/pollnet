@@ -1,2 +1,7 @@
 target/
 distbins/
+examples/*.dll
+examples/*.exe
+examples/*.so
+examples/*.dylib
+examples/pollnet.lua
