@@ -1,5 +1,3 @@
-extern crate url;
-
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::sync::Arc;
@@ -9,6 +7,7 @@ use std::io::Error as IoError;
 use std::path::Path;
 use std::os::raw::c_char;
 use std::ffi::CStr;
+use std::time;
 use log::{error, warn, info};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime;
@@ -19,8 +18,6 @@ use futures_util::{SinkExt, StreamExt, future};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response};
 use hyper_staticfile::Static;
-
-extern crate nanoid;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1073,4 +1070,11 @@ pub extern fn pollnet_get_nanoid(dest: *mut u8, dest_size: u32) -> i32 {
     } else {
         0
     }
+}
+
+
+#[no_mangle]
+pub extern fn pollnet_sleep_ms(milliseconds: u32) {
+    let dur = time::Duration::from_millis(milliseconds.into());
+    thread::sleep(dur);
 }

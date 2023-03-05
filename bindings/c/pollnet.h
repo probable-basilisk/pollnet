@@ -21,3 +21,4 @@ unsigned int pollnet_serve_http(struct pnctx* ctx, const char* addr);
 void pollnet_add_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename, const char* filedata, unsigned int filesize);
 void pollnet_remove_virtual_file(struct pnctx* ctx, unsigned int handle, const char* filename);
 int pollnet_get_nanoid(char* dest, unsigned int dest_size);
+void pollnet_sleep_ms(unsigned int milliseconds);
