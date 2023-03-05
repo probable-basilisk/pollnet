@@ -56,21 +56,16 @@ each_game_tick(function()
   end
 end)
 
--- You can optionally ask for only the body:
+-- You can optionally ask for only the body (second argument = true)
 local req_sock = pollnet.http_get("https://www.example.com", true)
-local part_order = {"STATUS CODE:", "HEADERS:", "BODY:"}
-local parts = {}
 each_game_tick(function()
   if not req_sock then return end
   local happy, msg = req_sock:poll()
   if not happy then
-    req_sock:close() -- good form
-    req_sock = nil
-    return
-  end
-  if msg then
-    table.insert(parts, msg)
-    print(part_order[#parts], parts[#parts])
+    error("Socket error:", req_sock:last_message())
+  elseif msg then 
+    print("Body:", msg) 
+    error("Socket done.")
   end
 end)
 ```
@@ -96,6 +91,8 @@ It can be used from anything that can link a C-API dynamic library (so in practi
 with an FFI).
 
 # Building
+Prebuilt binaries (including win32) are available from releases.
+
 Pollnet builds with Rust in the standard way. Assuming you're on a 64 bit machine,
 building for 64 bit:
 ```
