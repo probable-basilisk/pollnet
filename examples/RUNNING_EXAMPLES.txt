@@ -1,0 +1,11 @@
+To run lua examples you will need to copy:
+
+  pollnet.lua
+  pollnet.[dll | so | dylib]
+
+into this directory, and you'll need to have LuaJIT.
+(Either install luajit globally, 
+ or copy luajit.exe + lua51.dll into this folder)
+
+Then you can run for example:
+  luajit httpget.lua https://www.example.com
