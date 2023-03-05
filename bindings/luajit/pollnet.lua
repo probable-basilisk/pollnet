@@ -4,6 +4,18 @@ pollnet bindings for luajit
 example usage to read twitch chat:
 local pollnet = require("pollnet")
 local async = require("async") -- assuming you have some kind of async
+
+local function await_message(sock)
+  while sock:poll() do
+    if sock:last_message() then 
+      return sock:last_message() 
+    end
+    -- Important!
+    async.await_frames(1) 
+  end
+  error("Socket closed:", sock:last_message())
+end
+
 async.run(function()
   local url = "wss://irc-ws.chat.twitch.tv:443"
   local sock = pollnet.open_ws(url)
@@ -14,37 +26,22 @@ async.run(function()
   sock:send("NICK " .. anon_user_name)
   sock:send("JOIN #" .. target_channel)
   
-  while sock:poll() do
-    local msg = sock:last_message()
-    if msg then
-      if msg == "PING :tmi.twitch.tv" then
-        sock:send("PONG :tmi.twitch.tv")
-      end
-      print(msg)
+  while true do
+    local msg = await_message(sock)
+    if msg == "PING :tmi.twitch.tv" then
+      sock:send("PONG :tmi.twitch.tv")
     else
-      async.await_frames(1)
+      print(msg)
     end
   end
-  print("Socket closed: ", sock:last_message())
 end)
 
 -- example http get:
 async.run(function()
   local sock = pollnet.http_get("https://www.example.com")
-  while sock:poll() do
-    if sock:last_message() then
-      print("HTTP STATUS: ", sock:last_message())
-      break
-    end
-    async.await_frames(1)
-  end
-  while sock:poll() do
-    if sock:last_message() then
-      print("HTTP BODY: ", sock:last_message())
-      break
-    end
-    async.await_frames(1)
-  end
+  print("Status:", await_message(sock))
+  print("Headers:", await_message(sock))
+  print("Body:", await_message(sock))
   sock:close()
 end)
 ]]
