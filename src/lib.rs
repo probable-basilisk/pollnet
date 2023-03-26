@@ -1,7 +1,8 @@
 mod context;
+use context::SocketHandle;
 use context::SocketStatus;
-use context::SocketResult;
 use context::PollnetContext;
+use slotmap::Key;
 
 use std::thread;
 use std::os::raw::c_char;
@@ -35,68 +36,68 @@ pub extern fn pollnet_shutdown(ctx: *mut PollnetContext) {
 }
 
 #[no_mangle]
-pub extern fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u32 {
+pub extern fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let url = c_str_to_string(url);
-    ctx.open_ws(url)
+    ctx.open_ws(url).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+pub extern fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
-    ctx.listen_ws(addr)
+    ctx.listen_ws(addr).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_open_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+pub extern fn pollnet_open_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
-    ctx.open_tcp(addr)
+    ctx.open_tcp(addr).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+pub extern fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
-    ctx.listen_tcp(addr)
+    ctx.listen_tcp(addr).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char, body_only: u32) -> u32 {
+pub extern fn pollnet_simple_http_get(ctx: *mut PollnetContext, addr: *const c_char, body_only: bool) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
-    ctx.open_http_get_simple(addr, body_only > 0)
+    ctx.open_http_get_simple(addr, body_only).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_simple_http_post(ctx: *mut PollnetContext, addr: *const c_char, body_only: u32, content_type: *const c_char, bodydata: *const u8, bodysize: u32) -> u32 {
+pub extern fn pollnet_simple_http_post(ctx: *mut PollnetContext, addr: *const c_char, body_only: bool, content_type: *const c_char, bodydata: *const u8, bodysize: u32) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
     let content_type = c_str_to_string(content_type);
     let body = c_data_to_vec(bodydata, bodysize);
-    ctx.open_http_post_simple(addr, body_only > 0, content_type, body)
+    ctx.open_http_post_simple(addr, body_only, content_type, body).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_serve_static_http(ctx: *mut PollnetContext, addr: *const c_char, serve_dir: *const c_char) -> u32 {
+pub extern fn pollnet_serve_static_http(ctx: *mut PollnetContext, addr: *const c_char, serve_dir: *const c_char) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
     let serve_dir = c_str_to_string(serve_dir);
-    ctx.serve_http(addr, Some(serve_dir))
+    ctx.serve_http(addr, Some(serve_dir)).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) -> u32 {
+pub extern fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe{&mut *ctx};
     let addr = c_str_to_string(addr);
-    ctx.serve_http(addr, None)
+    ctx.serve_http(addr, None).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_close(ctx: *mut PollnetContext, handle: u32) {
+pub extern fn pollnet_close(ctx: *mut PollnetContext, handle: u64) {
     let ctx = unsafe{&mut *ctx};
-    ctx.close(handle)
+    ctx.close(handle.into())
 }
 
 #[no_mangle]
@@ -106,60 +107,60 @@ pub extern fn pollnet_close_all(ctx: *mut PollnetContext) {
 }
 
 #[no_mangle]
-pub extern fn pollnet_status(ctx: *mut PollnetContext, handle: u32) -> SocketStatus {
+pub extern fn pollnet_status(ctx: *mut PollnetContext, handle: u64) -> u32 {
     let ctx = unsafe{&*ctx};
-    if let Some(socket) = ctx.sockets.get(&handle) {
+    if let Some(socket) = ctx.sockets.get(handle.into()) {
         socket.status
     } else {
         SocketStatus::INVALIDHANDLE
-    }
+    }.into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_send(ctx: *mut PollnetContext, handle: u32, msg: *const c_char) {
+pub extern fn pollnet_send(ctx: *mut PollnetContext, handle: u64, msg: *const c_char) {
     let ctx = unsafe{&mut *ctx};
     let msg = c_str_to_string(msg);
-    ctx.send(handle, msg)
+    ctx.send(handle.into(), msg)
 }
 
 #[no_mangle]
-pub extern fn pollnet_send_binary(ctx: *mut PollnetContext, handle: u32, msg: *const u8, msgsize: u32) {
+pub extern fn pollnet_send_binary(ctx: *mut PollnetContext, handle: u64, msg: *const u8, msgsize: u32) {
     let ctx = unsafe{&mut *ctx};
     let msg = c_data_to_vec(msg, msgsize);
-    ctx.send_binary(handle, msg)
+    ctx.send_binary(handle.into(), msg)
 }
 
 #[no_mangle]
-pub extern fn pollnet_add_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char, filedata: *const u8, datasize: u32) {
+pub extern fn pollnet_add_virtual_file(ctx: *mut PollnetContext, handle: u64, filename: *const c_char, filedata: *const u8, datasize: u32) {
     let ctx = unsafe{&mut *ctx};
     let filename = c_str_to_string(filename);
     let filedata = c_data_to_vec(filedata, datasize);
-    ctx.add_virtual_file(handle, filename, filedata)
+    ctx.add_virtual_file(handle.into(), filename, filedata)
 }
 
 #[no_mangle]
-pub extern fn pollnet_remove_virtual_file(ctx: *mut PollnetContext, handle: u32, filename: *const c_char) {
+pub extern fn pollnet_remove_virtual_file(ctx: *mut PollnetContext, handle: u64, filename: *const c_char) {
     let ctx = unsafe{&mut *ctx};
     let filename = c_str_to_string(filename);
-    ctx.remove_virtual_file(handle, filename)
+    ctx.remove_virtual_file(handle.into(), filename)
 }
 
 #[no_mangle]
-pub extern fn pollnet_update(ctx: *mut PollnetContext, handle: u32) -> SocketResult {
+pub extern fn pollnet_update(ctx: *mut PollnetContext, handle: u64) -> u32 {
     let ctx = unsafe{&mut *ctx};
-    ctx.update(handle, false)
+    ctx.update(handle.into(), false).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_update_blocking(ctx: *mut PollnetContext, handle: u32) -> SocketResult {
+pub extern fn pollnet_update_blocking(ctx: *mut PollnetContext, handle: u64) -> u32 {
     let ctx = unsafe{&mut *ctx};
-    ctx.update(handle, true)
+    ctx.update(handle.into(), true).into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_get(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, dest_size: u32) -> i32 {
+pub extern fn pollnet_get(ctx: *mut PollnetContext, handle: u64, dest: *mut u8, dest_size: u32) -> i32 {
     let ctx = unsafe{&mut *ctx};
-    let socket = match ctx.sockets.get_mut(&handle) {
+    let socket = match ctx.sockets.get_mut(handle.into()) {
         Some(socket) => socket,
         None => return -1,
     };
@@ -181,18 +182,18 @@ pub extern fn pollnet_get(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, 
 }
 
 #[no_mangle]
-pub extern fn pollnet_get_connected_client_handle(ctx: *mut PollnetContext, handle: u32) -> u32 {
+pub extern fn pollnet_get_connected_client_handle(ctx: *mut PollnetContext, handle: u64) -> u64 {
     let ctx = unsafe{&mut *ctx};
-    match ctx.sockets.get_mut(&handle) {
+    match ctx.sockets.get_mut(handle.into()) {
         Some(socket) => socket.last_client_handle,
-        None => 0,
-    }
+        None => SocketHandle::null(),
+    }.into()
 }
 
 #[no_mangle]
-pub extern fn pollnet_get_error(ctx: *mut PollnetContext, handle: u32, dest: *mut u8, dest_size: u32) -> i32 {
+pub extern fn pollnet_get_error(ctx: *mut PollnetContext, handle: u64, dest: *mut u8, dest_size: u32) -> i32 {
     let ctx = unsafe{&mut *ctx};
-    let socket = match ctx.sockets.get_mut(&handle) {
+    let socket = match ctx.sockets.get_mut(handle.into()) {
         Some(socket) => socket,
         None => return -1,
     };

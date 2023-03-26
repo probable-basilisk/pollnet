@@ -5,6 +5,7 @@ use std::thread;
 use std::net::SocketAddr;
 use std::io::Error as IoError;
 use std::path::Path;
+use slotmap::{HopSlotMap, Key};
 use log::{error, warn, info};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime;
@@ -16,13 +17,27 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response};
 use hyper_staticfile::Static;
 
+slotmap::new_key_type! {
+  pub struct SocketHandle;
+}
+
+impl From<u64> for SocketHandle {
+    fn from(item: u64) -> Self {
+        Self::from(slotmap::KeyData::from_ffi(item))
+    }
+}
+impl From<SocketHandle> for u64 {
+    fn from(item: SocketHandle) -> Self {
+        item.data().as_ffi()
+    }
+}
+
 #[derive(Debug)]
 pub enum RecvError {
     Empty,
     Disconnected,
 }
 
-#[repr(C)]
 #[derive(Copy, Clone)]
 pub enum SocketResult {
     INVALIDHANDLE,
@@ -34,7 +49,6 @@ pub enum SocketResult {
     NEWCLIENT,
 }
 
-#[repr(C)]
 #[derive(Copy, Clone)]
 pub enum SocketStatus {
     INVALIDHANDLE,
@@ -43,6 +57,18 @@ pub enum SocketStatus {
     OPENING,
     ERROR,
 }
+
+impl From<SocketResult> for u32 {
+    fn from(item: SocketResult) -> Self {
+        item as u32
+    }
+}
+impl From<SocketStatus> for u32 {
+    fn from(item: SocketStatus) -> Self {
+        item as u32
+    }
+}
+
 
 struct ClientConn {
     tx: tokio::sync::mpsc::Sender<SocketMessage>, 
@@ -68,12 +94,11 @@ pub struct PollnetSocket {
     rx: std::sync::mpsc::Receiver<SocketMessage>,
     pub message: Option<Vec<u8>>,
     pub error: Option<String>,
-    pub last_client_handle: u32,
+    pub last_client_handle: SocketHandle,
 }
 
 pub struct PollnetContext {
-    pub sockets: HashMap<u32, Box<PollnetSocket>>,
-    next_handle: u32,
+    pub sockets: HopSlotMap<SocketHandle, Box<PollnetSocket>>,
     thread: Option<thread::JoinHandle<()>>,
     rt_handle: tokio::runtime::Handle,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
@@ -264,25 +289,14 @@ impl PollnetContext {
         }));
 
         PollnetContext{
-            next_handle: 1,
             rt_handle: handle_rx.recv().unwrap(),
-            thread: thread,
-            shutdown_tx: shutdown_tx,
-            sockets: HashMap::new()
+            thread,
+            shutdown_tx,
+            sockets: HopSlotMap::with_key()
         }
     }
 
-    fn _next_handle_that_satisfies_the_borrow_checker(next_handle: &mut u32) -> u32 {
-        let new_handle: u32 = *next_handle;
-        *next_handle += 1;
-        new_handle   
-    }
-
-    fn _next_handle(&mut self) -> u32 {
-        PollnetContext::_next_handle_that_satisfies_the_borrow_checker(&mut self.next_handle)
-    }
-
-    pub fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> u32 {
+    pub fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -354,15 +368,12 @@ impl PollnetContext {
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: 0
+            last_client_handle: SocketHandle::null()
         });
-        let new_handle = self._next_handle();
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
+        self.sockets.insert(socket)
     }
 
-    pub fn listen_ws(&mut self, addr: String) -> u32 {
+    pub fn listen_ws(&mut self, addr: String) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -406,15 +417,12 @@ impl PollnetContext {
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: 0
+            last_client_handle: SocketHandle::null()
         });
-        let new_handle = self._next_handle();
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
+        self.sockets.insert(socket)
     }
 
-    pub fn listen_tcp(&mut self, addr: String) -> u32 {
+    pub fn listen_tcp(&mut self, addr: String) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -458,15 +466,12 @@ impl PollnetContext {
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: 0
+            last_client_handle: SocketHandle::null()
         });
-        let new_handle = self._next_handle();
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
+        self.sockets.insert(socket)
     }
 
-    pub fn open_ws(&mut self, url: String) -> u32 {
+    pub fn open_ws(&mut self, url: String) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -529,15 +534,12 @@ impl PollnetContext {
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: 0
+            last_client_handle: SocketHandle::null()
         });
-        let new_handle = self._next_handle();
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
+        self.sockets.insert(socket)
     }
 
-    pub fn open_tcp(&mut self, addr: String) -> u32 {
+    pub fn open_tcp(&mut self, addr: String) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -594,12 +596,9 @@ impl PollnetContext {
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: 0
+            last_client_handle: SocketHandle::null()
         });
-        let new_handle = self._next_handle();
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
+        self.sockets.insert(socket)
     }
 
     async fn _handle_get(url: String, body_only: bool, dest: std::sync::mpsc::Sender<SocketMessage>) {
@@ -607,7 +606,7 @@ impl PollnetContext {
         _handle_http_response(reqwest::get(&url).await, body_only, dest).await;
     }
 
-    pub fn open_http_get_simple(&mut self, url: String, body_only: bool) -> u32 {
+    pub fn open_http_get_simple(&mut self, url: String, body_only: bool) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -633,12 +632,9 @@ impl PollnetContext {
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: 0
+            last_client_handle: SocketHandle::null()
         });
-        let new_handle = self._next_handle();
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
+        self.sockets.insert(socket)
     }
 
     async fn _handle_post(url: String, ret_body_only: bool, content_type: String, body: Vec<u8>, dest: std::sync::mpsc::Sender<SocketMessage>) {
@@ -652,7 +648,7 @@ impl PollnetContext {
         _handle_http_response(resp, ret_body_only, dest).await;
     }
 
-    pub fn open_http_post_simple(&mut self, url: String, ret_body_only: bool, content_type: String, body: Vec<u8>) -> u32 {
+    pub fn open_http_post_simple(&mut self, url: String, ret_body_only: bool, content_type: String, body: Vec<u8>) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
@@ -679,12 +675,9 @@ impl PollnetContext {
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: 0
+            last_client_handle: SocketHandle::null()
         });
-        let new_handle = self._next_handle();
-        self.sockets.insert(new_handle, socket);
-
-        new_handle
+        self.sockets.insert(socket)
     }
 
     pub fn close_all(&mut self) {
@@ -702,8 +695,8 @@ impl PollnetContext {
         self.sockets.clear(); // everything should be closed and safely droppable
     }
 
-    pub fn close(&mut self, handle: u32) {
-        if let Some(sock) = self.sockets.get_mut(&handle) {
+    pub fn close(&mut self, handle: SocketHandle) {
+        if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
                 SocketStatus::OPEN | SocketStatus::OPENING => {
                     match block_on(sock.tx.send(SocketMessage::Disconnect)) {
@@ -715,12 +708,12 @@ impl PollnetContext {
             }
             // Note: since we don't wait here for any kind of "disconnect" reply,
             // a socket that has been closed should just return without sending a reply
-            self.sockets.remove(&handle);
+            self.sockets.remove(handle);
         }
     }
 
-    pub fn send(&mut self, handle: u32, msg: String) {
-        if let Some(sock) = self.sockets.get_mut(&handle) {
+    pub fn send(&mut self, handle: SocketHandle, msg: String) {
+        if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
                 SocketStatus::OPEN | SocketStatus::OPENING => {
                     sock.tx.try_send(SocketMessage::Message(msg)).unwrap_or_default()
@@ -730,8 +723,8 @@ impl PollnetContext {
         }
     }
 
-    pub fn send_binary(&mut self, handle: u32, msg: Vec<u8>) {
-        if let Some(sock) = self.sockets.get_mut(&handle) {
+    pub fn send_binary(&mut self, handle: SocketHandle, msg: Vec<u8>) {
+        if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
                 SocketStatus::OPEN | SocketStatus::OPENING => {
                     sock.tx.try_send(SocketMessage::BinaryMessage(msg)).unwrap_or_default()
@@ -741,8 +734,8 @@ impl PollnetContext {
         }
     }
 
-    pub fn add_virtual_file(&mut self, handle: u32, filename: String, filedata: Vec<u8>) {
-        if let Some(sock) = self.sockets.get_mut(&handle) {
+    pub fn add_virtual_file(&mut self, handle: SocketHandle, filename: String, filedata: Vec<u8>) {
+        if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
                 SocketStatus::OPEN | SocketStatus::OPENING => {
                     sock.tx.try_send(SocketMessage::FileAdd(filename, filedata)).unwrap_or_default()
@@ -752,8 +745,8 @@ impl PollnetContext {
         }
     }
 
-    pub fn remove_virtual_file(&mut self, handle: u32, filename: String) {
-        if let Some(sock) = self.sockets.get_mut(&handle) {
+    pub fn remove_virtual_file(&mut self, handle: SocketHandle, filename: String) {
+        if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
                 SocketStatus::OPEN | SocketStatus::OPENING => {
                     sock.tx.try_send(SocketMessage::FileRemove(filename)).unwrap_or_default()
@@ -763,8 +756,8 @@ impl PollnetContext {
         }
     }
 
-    pub fn update(&mut self, handle: u32, blocking: bool) -> SocketResult {
-        let sock = match self.sockets.get_mut(&handle) {
+    pub fn update(&mut self, handle: SocketHandle, blocking: bool) -> SocketResult {
+        let sock = match self.sockets.get_mut(handle) {
             Some(sock) => sock,
             None => return SocketResult::INVALIDHANDLE,
         };
@@ -805,9 +798,6 @@ impl PollnetContext {
                         SocketResult::ERROR
                     },
                     Ok(SocketMessage::NewClient(conn)) => {
-                        // can't use self._next_handle() either for questionable reasons
-                        let new_handle = PollnetContext::_next_handle_that_satisfies_the_borrow_checker(&mut self.next_handle);
-                        sock.last_client_handle = new_handle;
                         sock.message = Some(conn.id.into_bytes());
                         let client_socket = Box::new(PollnetSocket{
                             tx: conn.tx,
@@ -815,9 +805,16 @@ impl PollnetContext {
                             status: SocketStatus::OPEN, // assume client sockets start open?
                             message: None,
                             error: None,
-                            last_client_handle: 0,
+                            last_client_handle: SocketHandle::null(),
                         });
-                        self.sockets.insert(new_handle, client_socket);
+                        let newhandle = self.sockets.insert(client_socket);
+                        // Note this horrible hack so it won't complain about multiple mutable borrows
+                        // of self.sockets at the same time
+                        let sock2 = match self.sockets.get_mut(handle) {
+                            Some(sock) => sock,
+                            None => return SocketResult::INVALIDHANDLE,
+                        };
+                        sock2.last_client_handle = newhandle;
                         SocketResult::NEWCLIENT
                     },
                     Ok(_) => SocketResult::NODATA,
