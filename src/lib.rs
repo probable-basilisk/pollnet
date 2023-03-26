@@ -23,6 +23,11 @@ pub extern "C" fn pollnet_init() -> *mut PollnetContext {
     Box::into_raw(Box::new(PollnetContext::new()))
 }
 
+pub extern "C" fn pollnet_handle_is_valid(handle: u64) -> bool {
+    let handle: SocketHandle = handle.into();
+    handle.is_null()
+}
+
 /// # Safety
 ///
 /// ctx must be valid

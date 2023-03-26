@@ -5,6 +5,8 @@ typedef struct pollnet_ctx pollnet_ctx;
 typedef uint64_t sockethandle_t;
 typedef uint32_t socketstatus_t;
 
+bool pollnet_handle_is_valid(sockethandle_t handle);
+
 pollnet_ctx* pollnet_init();
 pollnet_ctx* pollnet_get_or_init_static();
 void pollnet_shutdown(pollnet_ctx* ctx);
