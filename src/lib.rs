@@ -23,8 +23,11 @@ pub extern "C" fn pollnet_init() -> *mut PollnetContext {
     Box::into_raw(Box::new(PollnetContext::new()))
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_shutdown(ctx: *mut PollnetContext) {
+pub unsafe extern "C" fn pollnet_shutdown(ctx: *mut PollnetContext) {
     info!("Requested ctx close!");
     let ctx = unsafe { &mut *ctx };
     ctx.shutdown();
@@ -35,36 +38,51 @@ pub extern "C" fn pollnet_shutdown(ctx: *mut PollnetContext) {
     info!("Everything should be dead now!");
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u64 {
+pub unsafe extern "C" fn pollnet_open_ws(ctx: *mut PollnetContext, url: *const c_char) -> u64 {
     let ctx = unsafe { &mut *ctx };
     let url = c_str_to_string(url);
     ctx.open_ws(url).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
+pub unsafe extern "C" fn pollnet_listen_ws(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe { &mut *ctx };
     let addr = c_str_to_string(addr);
     ctx.listen_ws(addr).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_open_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
+pub unsafe extern "C" fn pollnet_open_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe { &mut *ctx };
     let addr = c_str_to_string(addr);
     ctx.open_tcp(addr).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
+pub unsafe extern "C" fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe { &mut *ctx };
     let addr = c_str_to_string(addr);
     ctx.listen_tcp(addr).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_simple_http_get(
+pub unsafe extern "C" fn pollnet_simple_http_get(
     ctx: *mut PollnetContext,
     addr: *const c_char,
     body_only: bool,
@@ -74,8 +92,11 @@ pub extern "C" fn pollnet_simple_http_get(
     ctx.open_http_get_simple(addr, body_only).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_simple_http_post(
+pub unsafe extern "C" fn pollnet_simple_http_post(
     ctx: *mut PollnetContext,
     addr: *const c_char,
     body_only: bool,
@@ -91,8 +112,11 @@ pub extern "C" fn pollnet_simple_http_post(
         .into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_serve_static_http(
+pub unsafe extern "C" fn pollnet_serve_static_http(
     ctx: *mut PollnetContext,
     addr: *const c_char,
     serve_dir: *const c_char,
@@ -103,45 +127,63 @@ pub extern "C" fn pollnet_serve_static_http(
     ctx.serve_http(addr, Some(serve_dir)).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
+pub unsafe extern "C" fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
     let ctx = unsafe { &mut *ctx };
     let addr = c_str_to_string(addr);
     ctx.serve_http(addr, None).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_close(ctx: *mut PollnetContext, handle: u64) {
+pub unsafe extern "C" fn pollnet_close(ctx: *mut PollnetContext, handle: u64) {
     let ctx = unsafe { &mut *ctx };
     ctx.close(handle.into())
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_close_all(ctx: *mut PollnetContext) {
+pub unsafe extern "C" fn pollnet_close_all(ctx: *mut PollnetContext) {
     let ctx = unsafe { &mut *ctx };
     ctx.close_all()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_status(ctx: *mut PollnetContext, handle: u64) -> u32 {
+pub unsafe extern "C" fn pollnet_status(ctx: *mut PollnetContext, handle: u64) -> u32 {
     let ctx = unsafe { &*ctx };
     if let Some(socket) = ctx.sockets.get(handle.into()) {
         socket.status
     } else {
-        SocketStatus::INVALIDHANDLE
+        SocketStatus::InvalidHandle
     }
     .into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_send(ctx: *mut PollnetContext, handle: u64, msg: *const c_char) {
+pub unsafe extern "C" fn pollnet_send(ctx: *mut PollnetContext, handle: u64, msg: *const c_char) {
     let ctx = unsafe { &mut *ctx };
     let msg = c_str_to_string(msg);
     ctx.send(handle.into(), msg)
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_send_binary(
+pub unsafe extern "C" fn pollnet_send_binary(
     ctx: *mut PollnetContext,
     handle: u64,
     msg: *const u8,
@@ -152,8 +194,11 @@ pub extern "C" fn pollnet_send_binary(
     ctx.send_binary(handle.into(), msg)
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_add_virtual_file(
+pub unsafe extern "C" fn pollnet_add_virtual_file(
     ctx: *mut PollnetContext,
     handle: u64,
     filename: *const c_char,
@@ -166,8 +211,11 @@ pub extern "C" fn pollnet_add_virtual_file(
     ctx.add_virtual_file(handle.into(), filename, filedata)
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_remove_virtual_file(
+pub unsafe extern "C" fn pollnet_remove_virtual_file(
     ctx: *mut PollnetContext,
     handle: u64,
     filename: *const c_char,
@@ -177,20 +225,29 @@ pub extern "C" fn pollnet_remove_virtual_file(
     ctx.remove_virtual_file(handle.into(), filename)
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_update(ctx: *mut PollnetContext, handle: u64) -> u32 {
+pub unsafe extern "C" fn pollnet_update(ctx: *mut PollnetContext, handle: u64) -> u32 {
     let ctx = unsafe { &mut *ctx };
     ctx.update(handle.into(), false).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_update_blocking(ctx: *mut PollnetContext, handle: u64) -> u32 {
+pub unsafe extern "C" fn pollnet_update_blocking(ctx: *mut PollnetContext, handle: u64) -> u32 {
     let ctx = unsafe { &mut *ctx };
     ctx.update(handle.into(), true).into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_get(
+pub unsafe extern "C" fn pollnet_get(
     ctx: *mut PollnetContext,
     handle: u64,
     dest: *mut u8,
@@ -218,8 +275,11 @@ pub extern "C" fn pollnet_get(
     }
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_get_connected_client_handle(
+pub unsafe extern "C" fn pollnet_get_connected_client_handle(
     ctx: *mut PollnetContext,
     handle: u64,
 ) -> u64 {
@@ -231,8 +291,11 @@ pub extern "C" fn pollnet_get_connected_client_handle(
     .into()
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_get_error(
+pub unsafe extern "C" fn pollnet_get_error(
     ctx: *mut PollnetContext,
     handle: u64,
     dest: *mut u8,
@@ -262,6 +325,10 @@ pub extern "C" fn pollnet_get_error(
 
 static mut HACKSTATICCONTEXT: *mut PollnetContext = 0 as *mut PollnetContext;
 
+/// # Safety
+///
+/// This function is a last resort.
+/// Please actually keep track of a ctx* if at all possible!
 #[no_mangle]
 pub unsafe extern "C" fn pollnet_get_or_init_static() -> *mut PollnetContext {
     if HACKSTATICCONTEXT.is_null() {
@@ -271,8 +338,11 @@ pub unsafe extern "C" fn pollnet_get_or_init_static() -> *mut PollnetContext {
     HACKSTATICCONTEXT
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_get_nanoid(dest: *mut u8, dest_size: u32) -> i32 {
+pub unsafe extern "C" fn pollnet_get_nanoid(dest: *mut u8, dest_size: u32) -> i32 {
     let id = nanoid::nanoid!();
     if id.len() < (dest_size as usize) {
         unsafe {
@@ -284,8 +354,11 @@ pub extern "C" fn pollnet_get_nanoid(dest: *mut u8, dest_size: u32) -> i32 {
     }
 }
 
+/// # Safety
+///
+/// ctx must be valid
 #[no_mangle]
-pub extern "C" fn pollnet_sleep_ms(milliseconds: u32) {
+pub unsafe extern "C" fn pollnet_sleep_ms(milliseconds: u32) {
     let dur = time::Duration::from_millis(milliseconds.into());
     thread::sleep(dur);
 }

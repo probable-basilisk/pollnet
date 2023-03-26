@@ -121,7 +121,7 @@ impl PollnetContext {
         let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
-            status: SocketStatus::OPENING,
+            status: SocketStatus::Opening,
             message: None,
             error: None,
             last_client_handle: SocketHandle::null(),
@@ -170,7 +170,7 @@ impl PollnetContext {
         let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
-            status: SocketStatus::OPENING,
+            status: SocketStatus::Opening,
             message: None,
             error: None,
             last_client_handle: SocketHandle::null(),

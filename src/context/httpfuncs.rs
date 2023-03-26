@@ -77,8 +77,8 @@ async fn _handle_http_response(
             .expect("TX error on http status");
         let mut headers = String::new();
         for (key, value) in resp.headers().iter() {
-            headers.push_str(&key.to_string());
-            headers.push_str(":");
+            headers.push_str(key.as_ref());
+            headers.push(':');
             headers.push_str(value.to_str().unwrap_or("MALFORMED"));
             headers.push_str(";\n");
         }
@@ -106,19 +106,18 @@ impl PollnetContext {
         self.rt_handle.spawn(async move {
             info!("HTTP server spawned");
             let addr = bind_addr.parse();
-            if let Err(_) = addr {
-                error!("Invalid TCP address: {}", bind_addr);
-                tx_from_sock
-                    .send(SocketMessage::Error("Invalid TCP address".to_string()))
-                    .unwrap_or_default();
-                return;
-            }
-            let addr = addr.unwrap();
-
-            let static_ = match serve_dir {
-                Some(path_string) => Some(Static::new(Path::new(&path_string))),
-                None => None,
+            let addr = match addr {
+                Ok(v) => v,
+                Err(_) => {
+                    error!("Invalid TCP address: {}", bind_addr);
+                    tx_from_sock
+                        .send(SocketMessage::Error("Invalid TCP address".to_string()))
+                        .unwrap_or_default();
+                    return;
+                }
             };
+
+            let static_ = serve_dir.map(|path_string| Static::new(Path::new(&path_string)));
 
             let virtual_files: HashMap<String, Vec<u8>> = HashMap::new();
             let virtual_files = Arc::new(RwLock::new(virtual_files));
@@ -175,7 +174,7 @@ impl PollnetContext {
         let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
-            status: SocketStatus::OPENING,
+            status: SocketStatus::Opening,
             message: None,
             error: None,
             last_client_handle: SocketHandle::null(),
@@ -194,10 +193,7 @@ impl PollnetContext {
                 tokio::select! {
                     _ = &mut get_handler => break,
                     from_c_message = rx_to_sock.recv() => {
-                        match from_c_message {
-                            Some(SocketMessage::Disconnect) => break,
-                            _ => ()
-                        }
+                        if let Some(SocketMessage::Disconnect) = from_c_message { break }
                     },
                 }
             }
@@ -206,7 +202,7 @@ impl PollnetContext {
         let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
-            status: SocketStatus::OPENING,
+            status: SocketStatus::Opening,
             message: None,
             error: None,
             last_client_handle: SocketHandle::null(),
@@ -231,10 +227,7 @@ impl PollnetContext {
                 tokio::select! {
                     _ = &mut post_handler => break,
                     from_c_message = rx_to_sock.recv() => {
-                        match from_c_message {
-                            Some(SocketMessage::Disconnect) => break,
-                            _ => ()
-                        }
+                        if let Some(SocketMessage::Disconnect) = from_c_message { break }
                     },
                 }
             }
@@ -243,7 +236,7 @@ impl PollnetContext {
         let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
-            status: SocketStatus::OPENING,
+            status: SocketStatus::Opening,
             message: None,
             error: None,
             last_client_handle: SocketHandle::null(),
