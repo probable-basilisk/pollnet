@@ -324,7 +324,7 @@ pub unsafe extern "C" fn pollnet_get_error(
 }
 
 static mut HACKSTATICCONTEXT: *mut PollnetContext = 0 as *mut PollnetContext;
-
+      
 /// # Safety
 ///
 /// This function is a last resort.

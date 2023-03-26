@@ -136,7 +136,7 @@ impl PollnetContext {
             shutdown_tx,
             sockets: HopSlotMap::with_key(),
         }
-    }
+    }           
 
     pub fn close_all(&mut self) {
         info!("Closing all sockets!");
