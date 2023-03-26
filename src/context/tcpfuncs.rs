@@ -1,15 +1,20 @@
 use super::*;
 
-async fn accept_tcp(mut tcp_stream: TcpStream, addr: SocketAddr, outer_tx: Option<std::sync::mpsc::Sender<SocketMessage>>) {
+async fn accept_tcp(
+    mut tcp_stream: TcpStream,
+    addr: SocketAddr,
+    outer_tx: Option<std::sync::mpsc::Sender<SocketMessage>>,
+) {
     let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
     let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
     if let Some(tx) = outer_tx {
-        tx.send(SocketMessage::NewClient(ClientConn{
+        tx.send(SocketMessage::NewClient(ClientConn {
             tx: tx_to_sock,
             rx: rx_from_sock,
             id: addr.to_string(),
-        })).expect("this shouldn't ever break?");
+        }))
+        .expect("this shouldn't ever break?");
     }
 
     tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
@@ -88,13 +93,13 @@ impl PollnetContext {
             }
         });
 
-        let socket = Box::new(PollnetSocket{
+        let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: SocketHandle::null()
+            last_client_handle: SocketHandle::null(),
         });
         self.sockets.insert(socket)
     }
@@ -150,15 +155,14 @@ impl PollnetContext {
             }
         });
 
-        let socket = Box::new(PollnetSocket{
+        let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: SocketHandle::null()
+            last_client_handle: SocketHandle::null(),
         });
         self.sockets.insert(socket)
     }
-
 }

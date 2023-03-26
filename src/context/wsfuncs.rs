@@ -1,14 +1,21 @@
 use super::*;
 
-async fn accept_ws(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::sync::mpsc::Sender<SocketMessage>) {//rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
+async fn accept_ws(
+    tcp_stream: TcpStream,
+    addr: SocketAddr,
+    outer_tx: std::sync::mpsc::Sender<SocketMessage>,
+) {
+    //rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
     let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
     let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
-    outer_tx.send(SocketMessage::NewClient(ClientConn{
-        tx: tx_to_sock,
-        rx: rx_from_sock,
-        id: addr.to_string(), //"BLURGH".to_string(),
-    })).expect("this shouldn't ever break?");
+    outer_tx
+        .send(SocketMessage::NewClient(ClientConn {
+            tx: tx_to_sock,
+            rx: rx_from_sock,
+            id: addr.to_string(), //"BLURGH".to_string(),
+        }))
+        .expect("this shouldn't ever break?");
 
     match accept_async(tcp_stream).await {
         Ok(mut ws_stream) => {
@@ -43,10 +50,12 @@ async fn accept_ws(tcp_stream: TcpStream, addr: SocketAddr, outer_tx: std::sync:
                     },
                 };
             }
-        },
+        }
         Err(err) => {
             error!("connection error: {}", err);
-            tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
+            tx_from_sock
+                .send(SocketMessage::Error(err.to_string()))
+                .expect("TX error on connection error");
         }
     }
 }
@@ -109,13 +118,13 @@ impl PollnetContext {
             }
         });
 
-        let socket = Box::new(PollnetSocket{
+        let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: SocketHandle::null()
+            last_client_handle: SocketHandle::null(),
         });
         self.sockets.insert(socket)
     }
@@ -158,13 +167,13 @@ impl PollnetContext {
             }
         });
 
-        let socket = Box::new(PollnetSocket{
+        let socket = Box::new(PollnetSocket {
             tx: tx_to_sock,
             rx: rx_from_sock,
             status: SocketStatus::OPENING,
             message: None,
             error: None,
-            last_client_handle: SocketHandle::null()
+            last_client_handle: SocketHandle::null(),
         });
         self.sockets.insert(socket)
     }

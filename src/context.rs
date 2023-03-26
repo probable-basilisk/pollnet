@@ -1,13 +1,13 @@
-use std::net::SocketAddr;
+use futures::executor::block_on;
+use futures_util::{future, SinkExt, StreamExt};
+use log::{error, info, warn};
 use slotmap::{HopSlotMap, Key};
-use log::{error, warn, info};
+use std::net::SocketAddr;
+use std::thread;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime;
-use tokio::io::AsyncWriteExt;
-use tokio_tungstenite::{connect_async, accept_async};
-use futures::executor::block_on;
-use std::thread;
-use futures_util::{SinkExt, StreamExt, future};
+use tokio_tungstenite::{accept_async, connect_async};
 
 mod httpfuncs;
 mod tcpfuncs;
@@ -65,13 +65,11 @@ impl From<SocketStatus> for u32 {
     }
 }
 
-
 struct ClientConn {
-    tx: tokio::sync::mpsc::Sender<SocketMessage>, 
-    rx: std::sync::mpsc::Receiver<SocketMessage>, 
+    tx: tokio::sync::mpsc::Sender<SocketMessage>,
+    rx: std::sync::mpsc::Receiver<SocketMessage>,
     id: String,
 }
-
 
 enum SocketMessage {
     Connect,
@@ -113,9 +111,9 @@ impl PollnetContext {
 
         let thread = Some(thread::spawn(move || {
             let rt = runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Unable to create the runtime");
+                .enable_all()
+                .build()
+                .expect("Unable to create the runtime");
 
             // Send handle back out so we can store it?
             handle_tx
@@ -133,11 +131,11 @@ impl PollnetContext {
             info!("tokio runtime shutdown");
         }));
 
-        PollnetContext{
+        PollnetContext {
             rt_handle: handle_rx.recv().unwrap(),
             thread,
             shutdown_tx,
-            sockets: HopSlotMap::with_key()
+            sockets: HopSlotMap::with_key(),
         }
     }
 
@@ -149,7 +147,7 @@ impl PollnetContext {
                     // don't care about errors at this point
                     block_on(sock.tx.send(SocketMessage::Disconnect)).unwrap_or_default();
                     sock.status = SocketStatus::CLOSED;
-                },
+                }
                 _ => (),
             }
         }
@@ -161,10 +159,10 @@ impl PollnetContext {
             match sock.status {
                 SocketStatus::OPEN | SocketStatus::OPENING => {
                     match block_on(sock.tx.send(SocketMessage::Disconnect)) {
-                        _ => ()
+                        _ => (),
                     }
                     sock.status = SocketStatus::CLOSED;
-                },
+                }
                 _ => (),
             }
             // Note: since we don't wait here for any kind of "disconnect" reply,
@@ -176,9 +174,10 @@ impl PollnetContext {
     pub fn send(&mut self, handle: SocketHandle, msg: String) {
         if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
-                SocketStatus::OPEN | SocketStatus::OPENING => {
-                    sock.tx.try_send(SocketMessage::Message(msg)).unwrap_or_default()
-                },
+                SocketStatus::OPEN | SocketStatus::OPENING => sock
+                    .tx
+                    .try_send(SocketMessage::Message(msg))
+                    .unwrap_or_default(),
                 _ => (),
             };
         }
@@ -187,9 +186,10 @@ impl PollnetContext {
     pub fn send_binary(&mut self, handle: SocketHandle, msg: Vec<u8>) {
         if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
-                SocketStatus::OPEN | SocketStatus::OPENING => {
-                    sock.tx.try_send(SocketMessage::BinaryMessage(msg)).unwrap_or_default()
-                },
+                SocketStatus::OPEN | SocketStatus::OPENING => sock
+                    .tx
+                    .try_send(SocketMessage::BinaryMessage(msg))
+                    .unwrap_or_default(),
                 _ => (),
             };
         }
@@ -198,9 +198,10 @@ impl PollnetContext {
     pub fn add_virtual_file(&mut self, handle: SocketHandle, filename: String, filedata: Vec<u8>) {
         if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
-                SocketStatus::OPEN | SocketStatus::OPENING => {
-                    sock.tx.try_send(SocketMessage::FileAdd(filename, filedata)).unwrap_or_default()
-                },
+                SocketStatus::OPEN | SocketStatus::OPENING => sock
+                    .tx
+                    .try_send(SocketMessage::FileAdd(filename, filedata))
+                    .unwrap_or_default(),
                 _ => (),
             };
         }
@@ -209,9 +210,10 @@ impl PollnetContext {
     pub fn remove_virtual_file(&mut self, handle: SocketHandle, filename: String) {
         if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
-                SocketStatus::OPEN | SocketStatus::OPENING => {
-                    sock.tx.try_send(SocketMessage::FileRemove(filename)).unwrap_or_default()
-                },
+                SocketStatus::OPEN | SocketStatus::OPENING => sock
+                    .tx
+                    .try_send(SocketMessage::FileRemove(filename))
+                    .unwrap_or_default(),
                 _ => (),
             };
         }
@@ -240,27 +242,27 @@ impl PollnetContext {
                     Ok(SocketMessage::Connect) => {
                         sock.status = SocketStatus::OPEN;
                         SocketResult::OPENING
-                    },
+                    }
                     Ok(SocketMessage::Disconnect) | Err(RecvError::Disconnected) => {
                         sock.status = SocketStatus::CLOSED;
                         SocketResult::CLOSED
-                    },
+                    }
                     Ok(SocketMessage::Message(msg)) => {
                         sock.message = Some(msg.into_bytes());
                         SocketResult::HASDATA
-                    },
+                    }
                     Ok(SocketMessage::BinaryMessage(msg)) => {
                         sock.message = Some(msg);
                         SocketResult::HASDATA
-                    },
+                    }
                     Ok(SocketMessage::Error(err)) => {
                         sock.error = Some(err);
                         sock.status = SocketStatus::ERROR;
                         SocketResult::ERROR
-                    },
+                    }
                     Ok(SocketMessage::NewClient(conn)) => {
                         sock.message = Some(conn.id.into_bytes());
-                        let client_socket = Box::new(PollnetSocket{
+                        let client_socket = Box::new(PollnetSocket {
                             tx: conn.tx,
                             rx: conn.rx,
                             status: SocketStatus::OPEN, // assume client sockets start open?
@@ -277,16 +279,15 @@ impl PollnetContext {
                         };
                         sock2.last_client_handle = newhandle;
                         SocketResult::NEWCLIENT
-                    },
+                    }
                     Ok(_) => SocketResult::NODATA,
                     Err(RecvError::Empty) => SocketResult::NODATA,
                 }
-            },
+            }
             SocketStatus::CLOSED => SocketResult::CLOSED,
-            _ => SocketResult::ERROR
+            _ => SocketResult::ERROR,
         }
     }
-
 
     pub fn shutdown(&mut self) {
         info!("Starting shutdown");
