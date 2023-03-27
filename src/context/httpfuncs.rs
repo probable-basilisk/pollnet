@@ -14,6 +14,7 @@ async fn handle_http_request<B>(
     static_: Option<Static>,
     virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 ) -> Result<Response<Body>, IoError> {
+    debug!("HTTP req: {:}", req.uri().path());
     {
         // Do we need like... more headers???
         let vfiles = virtual_files.read().expect("RwLock poisoned");
@@ -34,12 +35,12 @@ async fn handle_http_request<B>(
     }
 }
 
-async fn _handle_get(url: String, body_only: bool, dest: std::sync::mpsc::Sender<SocketMessage>) {
+async fn handle_get(url: String, body_only: bool, dest: std::sync::mpsc::Sender<SocketMessage>) {
     info!("HTTP GET: {}", url);
-    _handle_http_response(reqwest::get(&url).await, body_only, dest).await;
+    handle_http_response(reqwest::get(&url).await, body_only, dest).await;
 }
 
-async fn _handle_post(
+async fn handle_post(
     url: String,
     ret_body_only: bool,
     content_type: String,
@@ -54,10 +55,10 @@ async fn _handle_post(
         .body(body)
         .send()
         .await;
-    _handle_http_response(resp, ret_body_only, dest).await;
+    handle_http_response(resp, ret_body_only, dest).await;
 }
 
-async fn _handle_http_response(
+async fn handle_http_response(
     resp: reqwest::Result<reqwest::Response>,
     body_only: bool,
     dest: std::sync::mpsc::Sender<SocketMessage>,
@@ -87,6 +88,7 @@ async fn _handle_http_response(
     };
     match resp.bytes().await {
         Ok(body) => {
+            debug!("Body size: {:} bytes", body.len());
             dest.send(SocketMessage::BinaryMessage(body.to_vec()))
                 .expect("TX error on http body");
         }
@@ -95,6 +97,9 @@ async fn _handle_http_response(
                 .expect("TX error on http body error");
         }
     };
+    debug!("HTTP request complete, sending disconnect.");
+    dest.send(SocketMessage::Disconnect)
+        .expect("TX error on disconnect");
 }
 
 impl PollnetContext {
@@ -150,10 +155,12 @@ impl PollnetContext {
                             break
                         }
                         Some(SocketMessage::FileAdd(filename, filedata)) => {
+                            debug!("Adding virtual file: {:}", filename);
                             let mut vfiles = virtual_files.write().expect("Lock is poisoned");
                             vfiles.insert(filename, filedata);
                         }
                         Some(SocketMessage::FileRemove(filename)) => {
+                            debug!("Removing virtual file: {:}", filename);
                             let mut vfiles = virtual_files.write().expect("Lock is poisoned");
                             vfiles.remove(&filename);
                         }
@@ -187,10 +194,11 @@ impl PollnetContext {
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            let get_handler = _handle_get(url, body_only, tx_from_sock);
+            let get_handler = handle_get(url, body_only, tx_from_sock);
             tokio::pin!(get_handler);
             loop {
                 tokio::select! {
+                    // handle_get will send the disconnect message after completion
                     _ = &mut get_handler => break,
                     from_c_message = rx_to_sock.recv() => {
                         if let Some(SocketMessage::Disconnect) = from_c_message { break }
@@ -209,7 +217,7 @@ impl PollnetContext {
         });
         self.sockets.insert(socket)
     }
-         
+
     pub fn open_http_post_simple(
         &mut self,
         url: String,
@@ -221,7 +229,7 @@ impl PollnetContext {
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            let post_handler = _handle_post(url, ret_body_only, content_type, body, tx_from_sock);
+            let post_handler = handle_post(url, ret_body_only, content_type, body, tx_from_sock);
             tokio::pin!(post_handler);
             loop {
                 tokio::select! {

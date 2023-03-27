@@ -16,7 +16,7 @@ async fn accept_tcp(
         }))
         .expect("this shouldn't ever break?");
     }
-           
+
     tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
     // TODO: should this be bigger? Or automatically grow or something?
     let mut buf = [0; 65536];
@@ -42,17 +42,17 @@ async fn accept_tcp(
                     },
                     Ok(n) => {
                         // TODO: can we avoid these copies? Does it matter?
-                        info!("Read {:} bytes!", n);
+                        debug!("TCP read {:} bytes!", n);
                         let submessage = buf[0..n].to_vec();
                         tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
-                    }
+                    },
                     Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
                         // no effect?
-                    }
+                    },
                     Err(err) => {
                         tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
                         break;
-                    }
+                    },
                 }
             },
         };

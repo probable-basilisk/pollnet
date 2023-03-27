@@ -75,6 +75,8 @@ end)
 
 add_thread("http_server", function()
   local http_server_sock = pollnet.serve_http("0.0.0.0:8080", "test_www_dir", SCRATCH)
+  http_server_sock:add_virtual_file("virt/a.txt", "HELLO_VIRTUAL")
+  http_server_sock:add_virtual_file("virt/b.bin", "HELLO\x00\x00VIRTUAL\x00")
   pollsock("HTTP_SERVER", http_server_sock)
 end)
 

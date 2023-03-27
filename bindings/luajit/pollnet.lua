@@ -183,7 +183,11 @@ function socket_mt:serve_http(addr, dir, scratch_size)
 end
 
 function socket_mt:add_virtual_file(filename, filedata)
-  assert(filedata)
+  assert(filedata and type(filedata) == 'string', "filedata must be provided as string!")
+  if filename:sub(1,1) ~= "/" then
+    -- url paths start from root at "/"
+    filename = "/" .. filename
+  end
   local dsize = #filedata
   pollnet.pollnet_add_virtual_file(_ctx, self._socket, filename, filedata, dsize)
 end
@@ -210,7 +214,9 @@ function socket_mt:_get_message()
   if msg_size > 0 then
     return ffi.string(self._scratch, msg_size)
   else
-    return nil
+    -- Important! HTTP requests can have a zero-length body and that's distinct
+    -- from not returning anything!
+    return ""
   end
 end
 

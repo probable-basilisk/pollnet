@@ -16,7 +16,7 @@ async fn accept_ws(
             id: addr.to_string(), //"BLURGH".to_string(),
         }))
         .expect("this shouldn't ever break?");
-           
+
     match accept_async(tcp_stream).await {
         Ok(mut ws_stream) => {
             tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
@@ -67,25 +67,30 @@ impl PollnetContext {
 
         self.rt_handle.spawn(async move {
             info!("WS client spawned");
-            let real_url = url::Url::parse(&url);
-            if let Err(url_err) = real_url {
-                error!("Invalid URL: {}", url);
-                tx_from_sock.send(SocketMessage::Error(url_err.to_string())).unwrap_or_default();
-                return;
-            }
+            let real_url = match url::Url::parse(&url) {
+                Ok(v) => v,
+                Err(url_err) => {
+                    error!("Invalid URL: {}", url);
+                    tx_from_sock.send(SocketMessage::Error(url_err.to_string())).unwrap_or_default();
+                    return;
+                }
+            };
 
             info!("WS client attempting to connect to {}", url);
-            match connect_async(real_url.unwrap()).await {
+            match connect_async(real_url).await {
                 Ok((mut ws_stream, _)) => {
-                    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+                    debug!("Connection made.");
+                    tx_from_sock.send(SocketMessage::Connect).expect("TX Error");
                     loop {
                         tokio::select! {
                             from_c_message = rx_to_sock.recv() => {
                                 match from_c_message {
                                     Some(SocketMessage::Message(msg)) => {
+                                        debug!("Sending {:} bytes as text", msg.len());
                                         ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
                                     },
                                     Some(SocketMessage::BinaryMessage(msg)) => {
+                                        debug!("Sending {:} bytes as binary", msg.len());
                                         ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
                                     },
                                     _ => break

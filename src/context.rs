@@ -1,6 +1,6 @@
 use futures::executor::block_on;
 use futures_util::{future, SinkExt, StreamExt};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use slotmap::{HopSlotMap, Key};
 use std::net::SocketAddr;
 use std::thread;
@@ -136,7 +136,7 @@ impl PollnetContext {
             shutdown_tx,
             sockets: HopSlotMap::with_key(),
         }
-    }           
+    }
 
     pub fn close_all(&mut self) {
         info!("Closing all sockets!");
@@ -158,12 +158,13 @@ impl PollnetContext {
             match sock.status {
                 SocketStatus::Open | SocketStatus::Opening => {
                     if let Err(e) = block_on(sock.tx.send(SocketMessage::Disconnect)) {
-                        warn!("Error on closing socket: {:}", e);
+                        warn!("Socket already closed from other end: {:}", e);
                     }
                     sock.status = SocketStatus::Closed;
                 }
                 _ => (),
-            }
+            };
+            debug!("Removing handle: {:?}", handle);
             // Note: since we don't wait here for any kind of "disconnect" reply,
             // a socket that has been closed should just return without sending a reply
             self.sockets.remove(handle);
@@ -243,18 +244,22 @@ impl PollnetContext {
                         SocketResult::Opening
                     }
                     Ok(SocketMessage::Disconnect) | Err(RecvError::Disconnected) => {
+                        debug!("Socket disconnected.");
                         sock.status = SocketStatus::Closed;
                         SocketResult::Closed
                     }
                     Ok(SocketMessage::Message(msg)) => {
+                        debug!("Socket text message {:} bytes", msg.len());
                         sock.message = Some(msg.into_bytes());
                         SocketResult::HasData
                     }
                     Ok(SocketMessage::BinaryMessage(msg)) => {
+                        debug!("Socket binary message {:} bytes", msg.len());
                         sock.message = Some(msg);
                         SocketResult::HasData
                     }
                     Ok(SocketMessage::Error(err)) => {
+                        error!("Socket error: {:}", err);
                         sock.error = Some(err);
                         sock.status = SocketStatus::Error;
                         SocketResult::Error
