@@ -1,6 +1,7 @@
 local pollnet = require("pollnet")
 
 local DELAY_MS = 100
+local STARTUP_DELAY_MS = 500
 local OPEN_DELAY_MS = 0
 local TIMEOUT = 2000
 
@@ -51,7 +52,7 @@ end
 
 local function expect(val, expected, msg)
   ok(val == expected, msg, 
-    ("Expected [%s], got [%s]"):format(tostring(val), tostring(expected))
+    ("Expected [%s], got [%s]"):format(tostring(expected), tostring(val))
   )
 end
 
@@ -130,6 +131,8 @@ local function test_wss()
   print(res[1])
   expect_size(res[1], 10, "WSS got something back")
 end
+
+sync_sleep(STARTUP_DELAY_MS)
 
 test_local_ws()
 test_local_tcp()
