@@ -116,15 +116,22 @@ local function Socket()
   return setmetatable({}, {__index = socket_mt})
 end
 
+function socket_mt:_from_handle(scratch_size, handle)
+  init_ctx()
+  if self._socket then self:close() end
+  scratch_size = scratch_size or 64000
+  self._socket = handle
+  self._scratch = ffi.new("int8_t[?]", scratch_size)
+  self._scratch_size = scratch_size
+  self._status = "unpolled"
+  return self
+end
+
 function socket_mt:_open(scratch_size, opener, ...)
   init_ctx()
   if self._socket then self:close() end
   scratch_size = scratch_size or 64000
-  if type(opener) == "number" then
-    self._socket = opener
-  else
-    self._socket = opener(_ctx, ...)
-  end
+  self._socket = opener(_ctx, ...)
   self._scratch = ffi.new("int8_t[?]", scratch_size)
   self._scratch_size = scratch_size
   self._status = "unpolled"
@@ -237,7 +244,7 @@ function socket_mt:poll()
     local client_addr = self:_get_message()
     local client_handle = pollnet.pollnet_get_connected_client_handle(_ctx, self._socket)
     assert(client_handle > 0)
-    local client_sock = Socket():_open(self._scratch_size, client_handle)
+    local client_sock = Socket():_from_handle(self._scratch_size, client_handle)
     client_sock.parent = self
     client_sock.remote_addr = client_addr
     if self._on_connection then

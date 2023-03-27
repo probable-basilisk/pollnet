@@ -18,6 +18,7 @@ async fn accept_tcp(
     }
            
     tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+    // TODO: should this be bigger? Or automatically grow or something?
     let mut buf = [0; 65536];
     loop {
         tokio::select! {
@@ -34,8 +35,14 @@ async fn accept_tcp(
             },
             _ = tcp_stream.readable() => {
                 match tcp_stream.try_read(&mut buf){
+                    Ok(0) => {
+                        // Reading zero bytes indicates that the stream has closed
+                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+                        break;
+                    },
                     Ok(n) => {
                         // TODO: can we avoid these copies? Does it matter?
+                        info!("Read {:} bytes!", n);
                         let submessage = buf[0..n].to_vec();
                         tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
                     }
