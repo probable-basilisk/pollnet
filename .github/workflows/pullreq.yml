@@ -28,8 +28,11 @@ jobs:
         with:
           toolchain: stable
           profile: minimal
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: "luajit-2.1.0-beta3"
           
-      # Just directly invoke cargo
       - name: Cargo Build
         run: cargo build --release
         
@@ -38,3 +41,22 @@ jobs:
         run: |
           rustup target add i686-pc-windows-msvc
           cargo build --target=i686-pc-windows-msvc --release
+          
+      - name: Copy files (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cp target/release/*.so examples/
+          cp bindings/luajit/*.lua examples/
+          
+      - name: Copy files (windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cp target/release/*.dll examples/
+          cp bindings/luajit/*.lua examples/
+          
+      - name: Run tests
+        run: |
+          cd examples
+          lua test_server.lua &
+          lua test_clients.lua
+        shell: bash
