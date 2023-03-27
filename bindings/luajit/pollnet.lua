@@ -1,3 +1,7 @@
+-- Change this as necessary to point to where [lib?]pollnet.dll|.so|.dylib
+-- is actually located.
+local LIBDIR = "./"
+
 --[[ 
 pollnet bindings for luajit
 
@@ -90,7 +94,6 @@ local POLLNET_RESULT_CODES = {
 }
 
 local pollnet
-local LIBDIR = ""
 if jit.os == 'Windows' then
   pollnet = ffi.load(LIBDIR .. "pollnet.dll")
 elseif jit.os == 'OSX' or jit.os == 'Darwin' then
