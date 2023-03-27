@@ -89,7 +89,16 @@ local POLLNET_RESULT_CODES = {
   [6] = "newclient"
 }
 
-local pollnet = ffi.load("pollnet")
+local pollnet
+local LIBDIR = ""
+if jit.os == 'Windows' then
+  pollnet = ffi.load(LIBDIR .. "pollnet.dll")
+elseif jit.os == 'OSX' or jit.os == 'Darwin' then
+  pollnet = ffi.load(LIBDIR .. "libpollnet.dylib")
+else
+  pollnet = ffi.load(LIBDIR .. "libpollnet.so")
+end
+
 local _ctx = nil
 
 local function init_ctx()
