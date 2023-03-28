@@ -1,54 +1,9 @@
+-- pollnet bindings for luajit+ffi
+
 -- Change this as necessary to point to where [lib?]pollnet.dll|.so|.dylib
 -- is actually located.
 local LIBDIR = "./"
-
---[[ 
-pollnet bindings for luajit
-
-example usage to read twitch chat:
-local pollnet = require("pollnet")
-local async = require("async") -- assuming you have some kind of async
-
-local function await_message(sock)
-  while sock:poll() do
-    if sock:last_message() then 
-      return sock:last_message() 
-    end
-    -- Important!
-    async.await_frames(1) 
-  end
-  error("Socket closed:", sock:last_message())
-end
-
-async.run(function()
-  local url = "wss://irc-ws.chat.twitch.tv:443"
-  local sock = pollnet.open_ws(url)
-  sock:send("PASS doesntmatter")
-  -- special nick for anon read-only access on twitch
-  local anon_user_name = "justinfan" .. math.random(1, 100000)
-  local target_channel = "your_channel_name_here"
-  sock:send("NICK " .. anon_user_name)
-  sock:send("JOIN #" .. target_channel)
-  
-  while true do
-    local msg = await_message(sock)
-    if msg == "PING :tmi.twitch.tv" then
-      sock:send("PONG :tmi.twitch.tv")
-    else
-      print(msg)
-    end
-  end
-end)
-
--- example http get:
-async.run(function()
-  local sock = pollnet.http_get("https://www.example.com")
-  print("Status:", await_message(sock))
-  print("Headers:", await_message(sock))
-  print("Body:", await_message(sock))
-  sock:close()
-end)
-]]
+local API_VERSION = "1.0.0"
 
 local ffi = require("ffi")
 ffi.cdef[[
@@ -56,6 +11,7 @@ typedef struct pollnet_ctx pollnet_ctx;
 typedef uint64_t sockethandle_t;
 typedef uint32_t socketstatus_t;
 
+const char* pollnet_version();
 bool pollnet_handle_is_valid(sockethandle_t handle);
 pollnet_ctx* pollnet_init();
 pollnet_ctx* pollnet_get_or_init_static();
@@ -83,6 +39,35 @@ int32_t pollnet_get_nanoid(char* dest, uint32_t dest_size);
 void pollnet_sleep_ms(uint32_t milliseconds);
 ]]
 
+local pollnet
+if jit.os == 'Windows' then
+  pollnet = ffi.load(LIBDIR .. "pollnet.dll")
+elseif jit.os == 'OSX' or jit.os == 'Darwin' then
+  pollnet = ffi.load(LIBDIR .. "libpollnet.dylib")
+else
+  pollnet = ffi.load(LIBDIR .. "libpollnet.so")
+end
+local POLLNET_VERSION = ffi.string(pollnet.pollnet_version())
+
+do
+  local function split_version(v)
+    local major, minor, patch = v:match("(%d+)%.(%d+)%.(%d+)")
+    return tonumber(major), tonumber(minor), tonumber(patch)
+  end
+
+  local maj_req, min_req, pat_req = split_version(API_VERSION)
+  local maj_dll, min_dll, pat_dll = split_version(POLLNET_VERSION)
+  if maj_dll ~= maj_req then
+    error("Incompatible Pollnet binary: expected " .. API_VERSION 
+          .. " got " .. POLLNET_VERSION)
+  end
+  if (min_dll < min_req) or (min_dll == min_req and pat_dll < pat_req) then
+    error("Incompatible Pollnet binary: expected " .. API_VERSION 
+      .. " got " .. POLLNET_VERSION)
+  end
+end
+
+
 local POLLNET_RESULT_CODES = {
   [0] = "invalid_handle",
   [1] = "closed",
@@ -92,15 +77,6 @@ local POLLNET_RESULT_CODES = {
   [5] = "error",
   [6] = "newclient"
 }
-
-local pollnet
-if jit.os == 'Windows' then
-  pollnet = ffi.load(LIBDIR .. "pollnet.dll")
-elseif jit.os == 'OSX' or jit.os == 'Darwin' then
-  pollnet = ffi.load(LIBDIR .. "libpollnet.dylib")
-else
-  pollnet = ffi.load(LIBDIR .. "libpollnet.so")
-end
 
 local _ctx = nil
 
@@ -340,6 +316,7 @@ local function sleep_ms(ms)
 end
 
 return {
+  VERSION = POLLNET_VERSION,
   init = init_ctx,
   init_hack_static = init_ctx_hack_static,
   shutdown = shutdown_ctx, 

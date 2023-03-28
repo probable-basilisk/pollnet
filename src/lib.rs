@@ -10,6 +10,8 @@ use std::os::raw::c_char;
 use std::thread;
 use std::time;
 
+const VERSION_STR: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
+
 fn c_str_to_string(s: *const c_char) -> String {
     unsafe { CStr::from_ptr(s).to_string_lossy().into_owned() }
 }
@@ -19,10 +21,16 @@ fn c_data_to_vec(data: *const u8, datasize: u32) -> Vec<u8> {
 }
 
 #[no_mangle]
+pub extern "C" fn pollnet_version() -> *const c_char {
+    VERSION_STR.as_ptr() as *const c_char
+}
+
+#[no_mangle]
 pub extern "C" fn pollnet_init() -> *mut PollnetContext {
     Box::into_raw(Box::new(PollnetContext::new()))
 }
 
+#[no_mangle]
 pub extern "C" fn pollnet_handle_is_valid(handle: u64) -> bool {
     let handle: SocketHandle = handle.into();
     handle.is_null()

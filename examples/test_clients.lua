@@ -1,4 +1,5 @@
 local pollnet = require("pollnet")
+print("Pollnet version:", pollnet.VERSION)
 
 local DELAY_MS = 100
 local STARTUP_DELAY_MS = 500

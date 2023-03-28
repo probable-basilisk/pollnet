@@ -1,5 +1,6 @@
 local pollnet = require("pollnet")
 
+print("Pollnet version:", pollnet.VERSION)
 print("Starting up test WS+HTTP+TCP servers")
 
 local threads = {}
