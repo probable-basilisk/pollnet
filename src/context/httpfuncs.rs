@@ -1,3 +1,4 @@
+use http::{HeaderMap, HeaderName, HeaderValue};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response};
 use hyper_staticfile::Static;
@@ -35,32 +36,91 @@ async fn handle_http_request<B>(
     }
 }
 
-async fn handle_get(url: String, body_only: bool, dest: std::sync::mpsc::Sender<SocketMessage>) {
+async fn handle_get(
+    url: String,
+    headers: String,
+    body_only: bool,
+    dest: std::sync::mpsc::Sender<SocketMessage>,
+) {
     info!("HTTP GET: {}", url);
-    handle_http_response(reqwest::get(&url).await, body_only, dest).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .headers(parse_headers(&headers))
+        //.timeout(timeout)
+        .send()
+        .await;
+    handle_http_response(resp, body_only, dest).await;
 }
 
 async fn handle_post(
     url: String,
-    ret_body_only: bool,
-    content_type: String,
+    headers: String,
     body: Vec<u8>,
+    ret_body_only: bool,
     dest: std::sync::mpsc::Sender<SocketMessage>,
 ) {
-    info!("HTTP POST: {} (w/ {})", url, content_type);
+    info!("HTTP POST: {}", url);
     let client = reqwest::Client::new();
     let resp = client
         .post(&url)
-        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .headers(parse_headers(&headers))
         .body(body)
         .send()
         .await;
     handle_http_response(resp, ret_body_only, dest).await;
 }
 
+fn parse_header_line(line: &str) -> Option<(HeaderName, &str)> {
+    let split_idx = match line.find(':') {
+        Some(idx) => idx,
+        None => {
+            error!("Unable to parse HTTP header \"{:}\"", line);
+            return None;
+        }
+    };
+
+    let (header_k, header_v) = line.split_at(split_idx);
+    match HeaderName::from_bytes(header_k.as_bytes()) {
+        Ok(header_name) => Some((header_name, header_v)),
+        Err(_) => {
+            error!("Invalid HTTP header name \"{:}\"", header_k);
+            None
+        }
+    }
+}
+
+fn parse_headers(header_str: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for line in header_str.split('\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, val)) = parse_header_line(line) {
+            if let Ok(val) = HeaderValue::from_str(val) {
+                headers.insert(name, val);
+            } else {
+                error!("Invalid header value: \"{:}\"", val);
+            }
+        }
+    }
+    headers
+}
+
+fn format_headers(header_map: &HeaderMap) -> String {
+    let mut headers = String::new();
+    for (key, value) in header_map.iter() {
+        headers.push_str(key.as_ref());
+        headers.push(':');
+        headers.push_str(value.to_str().unwrap_or("MALFORMED"));
+        headers.push('\n');
+    }
+    headers
+}
+
 async fn handle_http_response(
     resp: reqwest::Result<reqwest::Response>,
-    body_only: bool,
+    ret_body_only: bool,
     dest: std::sync::mpsc::Sender<SocketMessage>,
 ) {
     let resp = match resp {
@@ -72,17 +132,11 @@ async fn handle_http_response(
             return;
         }
     };
-    if !body_only {
+    if !ret_body_only {
         let statuscode = resp.status().to_string();
         dest.send(SocketMessage::BinaryMessage(statuscode.into()))
             .expect("TX error on http status");
-        let mut headers = String::new();
-        for (key, value) in resp.headers().iter() {
-            headers.push_str(key.as_ref());
-            headers.push(':');
-            headers.push_str(value.to_str().unwrap_or("MALFORMED"));
-            headers.push_str(";\n");
-        }
+        let headers = format_headers(resp.headers());
         dest.send(SocketMessage::BinaryMessage(headers.into()))
             .expect("TX error on http headers");
     };
@@ -189,12 +243,17 @@ impl PollnetContext {
         self.sockets.insert(socket)
     }
 
-    pub fn open_http_get_simple(&mut self, url: String, body_only: bool) -> SocketHandle {
+    pub fn open_http_get_simple(
+        &mut self,
+        url: String,
+        headers: String,
+        ret_body_only: bool,
+    ) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            let get_handler = handle_get(url, body_only, tx_from_sock);
+            let get_handler = handle_get(url, headers, ret_body_only, tx_from_sock);
             tokio::pin!(get_handler);
             loop {
                 tokio::select! {
@@ -221,15 +280,15 @@ impl PollnetContext {
     pub fn open_http_post_simple(
         &mut self,
         url: String,
-        ret_body_only: bool,
-        content_type: String,
+        headers: String,
         body: Vec<u8>,
+        ret_body_only: bool,
     ) -> SocketHandle {
         let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
-            let post_handler = handle_post(url, ret_body_only, content_type, body, tx_from_sock);
+            let post_handler = handle_post(url, headers, body, ret_body_only, tx_from_sock);
             tokio::pin!(post_handler);
             loop {
                 tokio::select! {

@@ -19,8 +19,8 @@ void pollnet_shutdown(pollnet_ctx* ctx);
 sockethandle_t pollnet_open_tcp(pollnet_ctx* ctx, const char* addr);
 sockethandle_t pollnet_listen_tcp(pollnet_ctx* ctx, const char* addr);
 sockethandle_t pollnet_open_ws(pollnet_ctx* ctx, const char* url);
-sockethandle_t pollnet_simple_http_get(pollnet_ctx* ctx, const char* url, bool ret_body_only);
-sockethandle_t pollnet_simple_http_post(pollnet_ctx* ctx, const char* url, bool ret_body_only, const char* content_type, const char* data, uint32_t datasize);
+sockethandle_t pollnet_simple_http_get(pollnet_ctx* ctx, const char* url, const char* headers, bool ret_body_only);
+sockethandle_t pollnet_simple_http_post(pollnet_ctx* ctx, const char* url, const char* headers, const char* data, uint32_t datasize, bool ret_body_only);
 void pollnet_close(pollnet_ctx* ctx, sockethandle_t handle);
 void pollnet_close_all(pollnet_ctx* ctx);
 void pollnet_send(pollnet_ctx* ctx, sockethandle_t handle, const char* msg);
@@ -126,30 +126,47 @@ function socket_mt:_open(scratch_size, opener, ...)
   return self
 end
 
-local function bool_to_int(b)
-  return (b and 1) or 0
+local function format_headers(headers)
+  if type(headers) == 'string' then return headers end
+  if type(headers) ~= 'table' then
+    error("HTTP headers must be table|string, got:", tostring(headers))
+  end
+  local keys = {}
+  for name, _ in pairs(headers) do table.insert(keys, name) end
+  table.sort(keys)
+  local frags = {}
+  for idx, name in ipairs(keys) do
+    frags[idx] = (""):format(name, headers[name])
+  end
+  return table.concat(frags, "\n")
 end
 
-function socket_mt:http_get(url, ret_body_only, scratch_size)
+function socket_mt:http_get(url, headers, ret_body_only, scratch_size)
+  headers = format_headers(headers or "")
+  ret_body_only = not not ret_body_only
   return self:_open(
     scratch_size, 
     pollnet.pollnet_simple_http_get, 
-    url, 
-    bool_to_int(ret_body_only)
+    url,
+    headers,
+    ret_body_only
   )
 end
 
-function socket_mt:http_post(url, ret_body_only, body, content_type, scratch_size)
+function socket_mt:http_post(url, headers, body, ret_body_only, scratch_size)
   body = body or ""
-  content_type = content_type or "application/x-www-form-urlencoded"
+  headers = format_headers(headers or {
+    ["content-type"] = "application/x-www-form-urlencoded"
+  })
+  ret_body_only = not not ret_body_only
   return self:_open(
     scratch_size, 
     pollnet.pollnet_simple_http_post, 
-    url, 
-    bool_to_int(ret_body_only), 
-    content_type,
+    url,
+    headers,
     body, 
-    #body
+    #body,
+    ret_body_only
   )
 end
 
@@ -330,5 +347,6 @@ return {
   Socket = Socket,
   pollnet = pollnet,
   nanoid = get_nanoid,
-  sleep_ms = sleep_ms
+  sleep_ms = sleep_ms,
+  format_headers = format_headers
 }

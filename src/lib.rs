@@ -97,12 +97,14 @@ pub unsafe extern "C" fn pollnet_listen_tcp(ctx: *mut PollnetContext, addr: *con
 #[no_mangle]
 pub unsafe extern "C" fn pollnet_simple_http_get(
     ctx: *mut PollnetContext,
-    addr: *const c_char,
-    body_only: bool,
+    url: *const c_char,
+    headers: *const c_char,
+    ret_body_only: bool,
 ) -> u64 {
     let ctx = unsafe { &mut *ctx };
-    let addr = c_str_to_string(addr);
-    ctx.open_http_get_simple(addr, body_only).into()
+    let url = c_str_to_string(url);
+    let headers = c_str_to_string(headers);
+    ctx.open_http_get_simple(url, headers, ret_body_only).into()
 }
 
 /// # Safety
@@ -111,17 +113,17 @@ pub unsafe extern "C" fn pollnet_simple_http_get(
 #[no_mangle]
 pub unsafe extern "C" fn pollnet_simple_http_post(
     ctx: *mut PollnetContext,
-    addr: *const c_char,
-    body_only: bool,
-    content_type: *const c_char,
+    url: *const c_char,
+    headers: *const c_char,
     bodydata: *const u8,
     bodysize: u32,
+    ret_body_only: bool,
 ) -> u64 {
     let ctx = unsafe { &mut *ctx };
-    let addr = c_str_to_string(addr);
-    let content_type = c_str_to_string(content_type);
+    let url = c_str_to_string(url);
+    let headers = c_str_to_string(headers);
     let body = c_data_to_vec(bodydata, bodysize);
-    ctx.open_http_post_simple(addr, body_only, content_type, body)
+    ctx.open_http_post_simple(url, headers, body, ret_body_only)
         .into()
 }
 
