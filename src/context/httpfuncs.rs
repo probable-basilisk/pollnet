@@ -40,7 +40,7 @@ async fn handle_get(
     url: String,
     headers: String,
     body_only: bool,
-    dest: std::sync::mpsc::Sender<SocketMessage>,
+    dest: std::sync::mpsc::Sender<PollnetMessage>,
 ) {
     info!("HTTP GET: {}", url);
     let client = reqwest::Client::new();
@@ -58,7 +58,7 @@ async fn handle_post(
     headers: String,
     body: Vec<u8>,
     ret_body_only: bool,
-    dest: std::sync::mpsc::Sender<SocketMessage>,
+    dest: std::sync::mpsc::Sender<PollnetMessage>,
 ) {
     info!("HTTP POST: {}", url);
     let client = reqwest::Client::new();
@@ -113,38 +113,38 @@ fn format_headers(header_map: &HeaderMap) -> String {
 async fn handle_http_response(
     resp: reqwest::Result<reqwest::Response>,
     ret_body_only: bool,
-    dest: std::sync::mpsc::Sender<SocketMessage>,
+    dest: std::sync::mpsc::Sender<PollnetMessage>,
 ) {
     let resp = match resp {
         Ok(resp) => resp,
         Err(err) => {
             error!("HTTP failed: {}", err);
-            dest.send(SocketMessage::Error(err.to_string()))
+            dest.send(PollnetMessage::Error(err.to_string()))
                 .expect("TX error sending error!");
             return;
         }
     };
     if !ret_body_only {
         let statuscode = resp.status().to_string();
-        dest.send(SocketMessage::BinaryMessage(statuscode.into()))
+        dest.send(PollnetMessage::Binary(statuscode.into()))
             .expect("TX error on http status");
         let headers = format_headers(resp.headers());
-        dest.send(SocketMessage::BinaryMessage(headers.into()))
+        dest.send(PollnetMessage::Binary(headers.into()))
             .expect("TX error on http headers");
     };
     match resp.bytes().await {
         Ok(body) => {
             debug!("Body size: {:} bytes", body.len());
-            dest.send(SocketMessage::BinaryMessage(body.to_vec()))
+            dest.send(PollnetMessage::Binary(body.to_vec()))
                 .expect("TX error on http body");
         }
         Err(body_err) => {
-            dest.send(SocketMessage::Error(body_err.to_string()))
+            dest.send(PollnetMessage::Error(body_err.to_string()))
                 .expect("TX error on http body error");
         }
     };
     debug!("HTTP request complete, sending disconnect.");
-    dest.send(SocketMessage::Disconnect)
+    dest.send(PollnetMessage::Disconnect)
         .expect("TX error on disconnect");
 }
 
@@ -162,7 +162,7 @@ impl PollnetContext {
                 Err(_) => {
                     error!("Invalid TCP address: {}", bind_addr);
                     tx_from_sock
-                        .send(SocketMessage::Error("Invalid TCP address".to_string()))
+                        .send(PollnetMessage::Error("Invalid TCP address".to_string()))
                         .unwrap_or_default();
                     return;
                 }
@@ -188,7 +188,7 @@ impl PollnetContext {
             if let Err(bind_err) = server {
                 error!("Couldn't bind {}: {}", bind_addr, bind_err);
                 tx_from_sock
-                    .send(SocketMessage::Error(bind_err.to_string()))
+                    .send(PollnetMessage::Error(bind_err.to_string()))
                     .unwrap_or_default();
                 return;
             }
@@ -197,15 +197,15 @@ impl PollnetContext {
                 let virtual_files = virtual_files_two_the_clone_wars.clone();
                 loop {
                     match rx_to_sock.recv().await {
-                        Some(SocketMessage::Disconnect) | Some(SocketMessage::Error(_)) | None => {
-                            break
-                        }
-                        Some(SocketMessage::FileAdd(filename, filedata)) => {
+                        Some(PollnetMessage::Disconnect)
+                        | Some(PollnetMessage::Error(_))
+                        | None => break,
+                        Some(PollnetMessage::FileAdd(filename, filedata)) => {
                             debug!("Adding virtual file: {:}", filename);
                             let mut vfiles = virtual_files.write().expect("Lock is poisoned");
                             vfiles.insert(filename, filedata);
                         }
-                        Some(SocketMessage::FileRemove(filename)) => {
+                        Some(PollnetMessage::FileRemove(filename)) => {
                             debug!("Removing virtual file: {:}", filename);
                             let mut vfiles = virtual_files.write().expect("Lock is poisoned");
                             vfiles.remove(&filename);
@@ -218,7 +218,7 @@ impl PollnetContext {
             info!("HTTP server running on http://{}/", addr);
             if let Err(err) = graceful.await {
                 tx_from_sock
-                    .send(SocketMessage::Error(err.to_string()))
+                    .send(PollnetMessage::Error(err.to_string()))
                     .unwrap_or_default(); // don't care at this point
             }
             info!("HTTP server stopped.");
@@ -252,7 +252,7 @@ impl PollnetContext {
                     // handle_get will send the disconnect message after completion
                     _ = &mut get_handler => break,
                     from_c_message = rx_to_sock.recv() => {
-                        if let Some(SocketMessage::Disconnect) = from_c_message { break }
+                        if let Some(PollnetMessage::Disconnect) = from_c_message { break }
                     },
                 }
             }
@@ -286,7 +286,7 @@ impl PollnetContext {
                 tokio::select! {
                     _ = &mut post_handler => break,
                     from_c_message = rx_to_sock.recv() => {
-                        if let Some(SocketMessage::Disconnect) = from_c_message { break }
+                        if let Some(PollnetMessage::Disconnect) = from_c_message { break }
                     },
                 }
             }

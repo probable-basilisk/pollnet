@@ -3,13 +3,13 @@ use super::*;
 async fn accept_tcp(
     mut tcp_stream: TcpStream,
     addr: SocketAddr,
-    outer_tx: Option<std::sync::mpsc::Sender<SocketMessage>>,
+    outer_tx: Option<std::sync::mpsc::Sender<PollnetMessage>>,
 ) {
     let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
     let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
     if let Some(tx) = outer_tx {
-        tx.send(SocketMessage::NewClient(ClientConn {
+        tx.send(PollnetMessage::NewClient(ClientConn {
             tx: tx_to_sock,
             rx: rx_from_sock,
             id: addr.to_string(),
@@ -17,17 +17,17 @@ async fn accept_tcp(
         .expect("this shouldn't ever break?");
     }
 
-    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+    tx_from_sock.send(PollnetMessage::Connect).expect("oh boy");
     // TODO: should this be bigger? Or automatically grow or something?
     let mut buf = [0; 65536];
     loop {
         tokio::select! {
             from_c_message = rx_to_sock.recv() => {
                 match from_c_message {
-                    Some(SocketMessage::Message(msg)) => {
+                    Some(PollnetMessage::Text(msg)) => {
                         tcp_stream.write_all(msg.as_bytes()).await.expect("TCP send error");
                     },
-                    Some(SocketMessage::BinaryMessage(msg)) => {
+                    Some(PollnetMessage::Binary(msg)) => {
                         tcp_stream.write_all(&msg).await.expect("TCP send error");
                     },
                     _ => break
@@ -37,20 +37,20 @@ async fn accept_tcp(
                 match tcp_stream.try_read(&mut buf){
                     Ok(0) => {
                         // Reading zero bytes indicates that the stream has closed
-                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+                        tx_from_sock.send(PollnetMessage::Disconnect).expect("TX error on disconnect");
                         break;
                     },
                     Ok(n) => {
                         // TODO: can we avoid these copies? Does it matter?
                         debug!("TCP read {:} bytes!", n);
                         let submessage = buf[0..n].to_vec();
-                        tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
+                        tx_from_sock.send(PollnetMessage::Binary(submessage)).expect("TX error on socket message");
                     },
                     Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
                         // no effect?
                     },
                     Err(err) => {
-                        tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
+                        tx_from_sock.send(PollnetMessage::Error(err.to_string())).expect("TX error on socket error");
                         break;
                     },
                 }
@@ -71,17 +71,17 @@ impl PollnetContext {
             let listener = match TcpListener::bind(&addr).await {
                 Ok(listener) => listener,
                 Err(tcp_err) => {
-                    tx_from_sock.send(SocketMessage::Error(tcp_err.to_string())).unwrap_or_default();
+                    tx_from_sock.send(PollnetMessage::Error(tcp_err.to_string())).unwrap_or_default();
                     return;
                 }
             };
             info!("TCP server waiting for connections on {}", addr);
-            tx_from_sock.send(SocketMessage::Connect).expect("oh boy");                    
+            tx_from_sock.send(PollnetMessage::Connect).expect("oh boy");                    
             loop {
                 tokio::select! {
                     from_c_message = rx_to_sock.recv() => {
                         match from_c_message {
-                            Some(SocketMessage::Message(_msg)) => {}, // server socket ignores sends
+                            Some(PollnetMessage::Text(_msg)) => {}, // server socket ignores sends
                             _ => break
                         }
                     },
@@ -91,7 +91,7 @@ impl PollnetContext {
                                 tokio::spawn(accept_tcp(tcp_stream, addr, Some(tx_from_sock.clone())));
                             },
                             Err(msg) => {
-                                tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                                tx_from_sock.send(PollnetMessage::Error(msg.to_string())).expect("TX error on socket error");
                                 break;
                             }
                         }
@@ -120,15 +120,15 @@ impl PollnetContext {
             let mut buf = [0; 65536];
             match TcpStream::connect(addr).await {
                 Ok(mut tcp_stream) => {
-                    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+                    tx_from_sock.send(PollnetMessage::Connect).expect("oh boy");
                     loop {
                         tokio::select! {
                             from_c_message = rx_to_sock.recv() => {
                                 match from_c_message {
-                                    Some(SocketMessage::Message(msg)) => {
+                                    Some(PollnetMessage::Text(msg)) => {
                                         tcp_stream.write_all(msg.as_bytes()).await.expect("TCP send error");
                                     },
-                                    Some(SocketMessage::BinaryMessage(msg)) => {
+                                    Some(PollnetMessage::Binary(msg)) => {
                                         tcp_stream.write_all(&msg).await.expect("TCP send error");
                                     },
                                     _ => break
@@ -139,13 +139,13 @@ impl PollnetContext {
                                     Ok(n) => {
                                         // TODO: can we avoid these copies? Does it matter?
                                         let submessage = buf[0..n].to_vec();
-                                        tx_from_sock.send(SocketMessage::BinaryMessage(submessage)).expect("TX error on socket message");
+                                        tx_from_sock.send(PollnetMessage::Binary(submessage)).expect("TX error on socket message");
                                     }
                                     Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
                                         // no effect?
                                     }
                                     Err(err) => {
-                                        tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on socket error");
+                                        tx_from_sock.send(PollnetMessage::Error(err.to_string())).expect("TX error on socket error");
                                         break;
                                     }
                                 }
@@ -157,7 +157,7 @@ impl PollnetContext {
                 },
                 Err(err) => {
                     error!("TCP client connection error: {}", err);
-                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
+                    tx_from_sock.send(PollnetMessage::Error(err.to_string())).expect("TX error on connection error");
                 }
             }
         });

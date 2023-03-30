@@ -66,16 +66,16 @@ impl From<SocketStatus> for u32 {
 }
 
 struct ClientConn {
-    tx: tokio::sync::mpsc::Sender<SocketMessage>,
-    rx: std::sync::mpsc::Receiver<SocketMessage>,
+    tx: tokio::sync::mpsc::Sender<PollnetMessage>,
+    rx: std::sync::mpsc::Receiver<PollnetMessage>,
     id: String,
 }
 
-enum SocketMessage {
+enum PollnetMessage {
     Connect,
     Disconnect,
-    Message(String),
-    BinaryMessage(Vec<u8>),
+    Text(String),
+    Binary(Vec<u8>),
     Error(String),
     NewClient(ClientConn),
     FileAdd(String, Vec<u8>),
@@ -84,8 +84,8 @@ enum SocketMessage {
 
 pub struct PollnetSocket {
     pub status: SocketStatus,
-    tx: tokio::sync::mpsc::Sender<SocketMessage>,
-    rx: std::sync::mpsc::Receiver<SocketMessage>,
+    tx: tokio::sync::mpsc::Sender<PollnetMessage>,
+    rx: std::sync::mpsc::Receiver<PollnetMessage>,
     pub message: Option<Vec<u8>>,
     pub error: Option<String>,
     pub last_client_handle: SocketHandle,
@@ -144,7 +144,7 @@ impl PollnetContext {
             match sock.status {
                 SocketStatus::Open | SocketStatus::Opening => {
                     // don't care about errors at this point
-                    block_on(sock.tx.send(SocketMessage::Disconnect)).unwrap_or_default();
+                    block_on(sock.tx.send(PollnetMessage::Disconnect)).unwrap_or_default();
                     sock.status = SocketStatus::Closed;
                 }
                 _ => (),
@@ -157,7 +157,7 @@ impl PollnetContext {
         if let Some(sock) = self.sockets.get_mut(handle) {
             match sock.status {
                 SocketStatus::Open | SocketStatus::Opening => {
-                    if let Err(e) = block_on(sock.tx.send(SocketMessage::Disconnect)) {
+                    if let Err(e) = block_on(sock.tx.send(PollnetMessage::Disconnect)) {
                         warn!("Socket already closed from other end: {:}", e);
                     }
                     sock.status = SocketStatus::Closed;
@@ -176,7 +176,7 @@ impl PollnetContext {
             match sock.status {
                 SocketStatus::Open | SocketStatus::Opening => sock
                     .tx
-                    .try_send(SocketMessage::Message(msg))
+                    .try_send(PollnetMessage::Text(msg))
                     .unwrap_or_default(),
                 _ => (),
             };
@@ -188,7 +188,7 @@ impl PollnetContext {
             match sock.status {
                 SocketStatus::Open | SocketStatus::Opening => sock
                     .tx
-                    .try_send(SocketMessage::BinaryMessage(msg))
+                    .try_send(PollnetMessage::Binary(msg))
                     .unwrap_or_default(),
                 _ => (),
             };
@@ -200,7 +200,7 @@ impl PollnetContext {
             match sock.status {
                 SocketStatus::Open | SocketStatus::Opening => sock
                     .tx
-                    .try_send(SocketMessage::FileAdd(filename, filedata))
+                    .try_send(PollnetMessage::FileAdd(filename, filedata))
                     .unwrap_or_default(),
                 _ => (),
             };
@@ -212,7 +212,7 @@ impl PollnetContext {
             match sock.status {
                 SocketStatus::Open | SocketStatus::Opening => sock
                     .tx
-                    .try_send(SocketMessage::FileRemove(filename))
+                    .try_send(PollnetMessage::FileRemove(filename))
                     .unwrap_or_default(),
                 _ => (),
             };
@@ -239,32 +239,32 @@ impl PollnetContext {
                 };
 
                 match result {
-                    Ok(SocketMessage::Connect) => {
+                    Ok(PollnetMessage::Connect) => {
                         sock.status = SocketStatus::Open;
                         SocketResult::Opening
                     }
-                    Ok(SocketMessage::Disconnect) | Err(RecvError::Disconnected) => {
+                    Ok(PollnetMessage::Disconnect) | Err(RecvError::Disconnected) => {
                         debug!("Socket disconnected.");
                         sock.status = SocketStatus::Closed;
                         SocketResult::Closed
                     }
-                    Ok(SocketMessage::Message(msg)) => {
+                    Ok(PollnetMessage::Text(msg)) => {
                         debug!("Socket text message {:} bytes", msg.len());
                         sock.message = Some(msg.into_bytes());
                         SocketResult::HasData
                     }
-                    Ok(SocketMessage::BinaryMessage(msg)) => {
+                    Ok(PollnetMessage::Binary(msg)) => {
                         debug!("Socket binary message {:} bytes", msg.len());
                         sock.message = Some(msg);
                         SocketResult::HasData
                     }
-                    Ok(SocketMessage::Error(err)) => {
+                    Ok(PollnetMessage::Error(err)) => {
                         error!("Socket error: {:}", err);
                         sock.error = Some(err);
                         sock.status = SocketStatus::Error;
                         SocketResult::Error
                     }
-                    Ok(SocketMessage::NewClient(conn)) => {
+                    Ok(PollnetMessage::NewClient(conn)) => {
                         sock.message = Some(conn.id.into_bytes());
                         let client_socket = Box::new(PollnetSocket {
                             tx: conn.tx,
