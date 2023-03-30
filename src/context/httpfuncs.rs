@@ -72,22 +72,9 @@ async fn handle_post(
 }
 
 fn parse_header_line(line: &str) -> Option<(HeaderName, &str)> {
-    let split_idx = match line.find(':') {
-        Some(idx) => idx,
-        None => {
-            error!("Unable to parse HTTP header \"{:}\"", line);
-            return None;
-        }
-    };
-
-    let (header_k, header_v) = line.split_at(split_idx);
-    match HeaderName::from_bytes(header_k.as_bytes()) {
-        Ok(header_name) => Some((header_name, header_v)),
-        Err(_) => {
-            error!("Invalid HTTP header name \"{:}\"", header_k);
-            None
-        }
-    }
+    let (header_k, header_v) = line.split_once(':')?;
+    let name = HeaderName::from_bytes(header_k.as_bytes()).ok()?;
+    Some((name, header_v))
 }
 
 fn parse_headers(header_str: &str) -> HeaderMap {
@@ -96,12 +83,17 @@ fn parse_headers(header_str: &str) -> HeaderMap {
         if line.is_empty() {
             continue;
         }
-        if let Some((name, val)) = parse_header_line(line) {
-            if let Ok(val) = HeaderValue::from_str(val) {
-                headers.insert(name, val);
-            } else {
-                error!("Invalid header value: \"{:}\"", val);
+        let (name, val) = match parse_header_line(line) {
+            Some(v) => v,
+            None => {
+                error!("Invalid header line: \"{:}\"", line);
+                continue;
             }
+        };
+        if let Ok(val) = HeaderValue::from_str(val) {
+            headers.insert(name, val);
+        } else {
+            error!("Invalid header value: \"{:}\"", val);
         }
     }
     headers

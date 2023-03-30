@@ -87,20 +87,20 @@ local function test_local_tcp()
 end
 
 local function test_local_http()
-  local sock = pollnet.http_get("http://127.0.0.1:8080/testfile.txt", false)
+  local sock = pollnet.http_get("http://127.0.0.1:8080/testfile.txt")
   local res = sync_get_messages(sock, 3) -- status, headers, body
   expect_match(res[1], "^200", "HTTP GET status 200")
   expect(res[3], "TEST1234", "HTTP GET body")
 
-  local sock = pollnet.http_get("http://127.0.0.1:8080/idontexist.txt", false)
+  local sock = pollnet.http_get("http://127.0.0.1:8080/idontexist.txt")
   local res = sync_get_messages(sock, 3) -- status, headers, body
   expect_match(res[1], "^404", "HTTP GET status 404")
 
-  local sock = pollnet.http_get("http://127.0.0.1:8080/virt/a.txt", true)
+  local sock = pollnet.http_get("http://127.0.0.1:8080/virt/a.txt", nil, true)
   local res = sync_get_messages(sock, 1)
   expect(res[1], "HELLO_VIRTUAL", "HTTP GET virtual + body only")
 
-  local sock = pollnet.http_get("http://127.0.0.1:8080/virt/b.bin", false)
+  local sock = pollnet.http_get("http://127.0.0.1:8080/virt/b.bin")
   local res = sync_get_messages(sock, 3)
   expect(res[3], "HELLO\x00\x00VIRTUAL\x00", "HTTP GET binary")
 
@@ -114,7 +114,7 @@ local function test_local_http()
 end
 
 local function test_https()
-  local sock = pollnet.http_get("https://example.com/", false)
+  local sock = pollnet.http_get("https://example.com/")
   local res = sync_get_messages(sock, 3) -- status, headers, body
   expect_match(res[1], "^200", "HTTPS GET status 200")
   expect_size(res[3], 500, "HTTPS GET body has content")

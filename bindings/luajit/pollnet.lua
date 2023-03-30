@@ -129,20 +129,23 @@ end
 local function format_headers(headers)
   if type(headers) == 'string' then return headers end
   if type(headers) ~= 'table' then
-    error("HTTP headers must be table|string, got:", tostring(headers))
+    error("HTTP headers must be table|string, got: " .. tostring(headers))
   end
   local keys = {}
-  for name, _ in pairs(headers) do table.insert(keys, name) end
+  for name, _ in pairs(headers) do 
+    table.insert(keys, name) 
+  end
   table.sort(keys)
   local frags = {}
   for idx, name in ipairs(keys) do
-    frags[idx] = (""):format(name, headers[name])
+    frags[idx] = ("%s:%s"):format(name, headers[name])
   end
   return table.concat(frags, "\n")
 end
 
 function socket_mt:http_get(url, headers, ret_body_only, scratch_size)
   headers = format_headers(headers or "")
+  print("outgoing headers:", headers)
   ret_body_only = not not ret_body_only
   return self:_open(
     scratch_size, 
