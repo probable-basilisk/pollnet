@@ -4,7 +4,7 @@ use context::SocketHandle;
 use context::SocketStatus;
 use slotmap::Key;
 
-use log::{info, warn};
+use log::{error, info, warn};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::thread;
@@ -34,6 +34,11 @@ pub extern "C" fn pollnet_init() -> *mut PollnetContext {
 pub extern "C" fn pollnet_handle_is_valid(handle: u64) -> bool {
     let handle: SocketHandle = handle.into();
     handle.is_null()
+}
+
+#[no_mangle]
+pub extern "C" fn pollnet_invalid_handle() -> u64 {
+    SocketHandle::null().into()
 }
 
 /// # Safety
@@ -267,24 +272,34 @@ pub unsafe extern "C" fn pollnet_get(
     handle: u64,
     dest: *mut u8,
     dest_size: u32,
-) -> i32 {
+) -> u32 {
     let ctx = unsafe { &mut *ctx };
     let socket = match ctx.sockets.get_mut(handle.into()) {
         Some(socket) => socket,
-        None => return -1,
+        None => return 0,
     };
+
+    let msgsize = match &socket.message {
+        Some(msg) => msg.len(),
+        None => 0,
+    };
+
+    if msgsize > u32::MAX as usize {
+        error!("Message size exceeds u32 max: {:}", msgsize);
+        return 0;
+    }
+
+    if msgsize > dest_size as usize {
+        return msgsize as u32;
+    }
 
     match socket.message.take() {
         Some(msg) => {
-            let ncopy = msg.len();
-            if ncopy < (dest_size as usize) {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
-                }
-                ncopy as i32
-            } else {
-                0
+            let ncopy = msg.len().min(dest_size as usize);
+            unsafe {
+                std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
             }
+            ncopy as u32
         }
         None => 0,
     }
@@ -315,24 +330,20 @@ pub unsafe extern "C" fn pollnet_get_error(
     handle: u64,
     dest: *mut u8,
     dest_size: u32,
-) -> i32 {
+) -> u32 {
     let ctx = unsafe { &mut *ctx };
     let socket = match ctx.sockets.get_mut(handle.into()) {
         Some(socket) => socket,
-        None => return -1,
+        None => return 0,
     };
 
     match socket.error.take() {
         Some(msg) => {
-            let ncopy = msg.len();
-            if ncopy < (dest_size as usize) {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
-                }
-                ncopy as i32
-            } else {
-                0
+            let ncopy = msg.len().min(dest_size as usize);
+            unsafe {
+                std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
             }
+            ncopy as u32
         }
         None => 0,
     }
@@ -357,16 +368,13 @@ pub unsafe extern "C" fn pollnet_get_or_init_static() -> *mut PollnetContext {
 ///
 /// ctx must be valid
 #[no_mangle]
-pub unsafe extern "C" fn pollnet_get_nanoid(dest: *mut u8, dest_size: u32) -> i32 {
+pub unsafe extern "C" fn pollnet_get_nanoid(dest: *mut u8, dest_size: u32) -> u32 {
     let id = nanoid::nanoid!();
-    if id.len() < (dest_size as usize) {
-        unsafe {
-            std::ptr::copy_nonoverlapping(id.as_ptr(), dest, id.len());
-        }
-        id.len() as i32
-    } else {
-        0
+    let ncopy = id.len().min(dest_size as usize);
+    unsafe {
+        std::ptr::copy_nonoverlapping(id.as_ptr(), dest, ncopy);
     }
+    ncopy as u32
 }
 
 /// # Safety

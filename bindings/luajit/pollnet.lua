@@ -13,6 +13,8 @@ typedef uint32_t socketstatus_t;
 
 const char* pollnet_version();
 bool pollnet_handle_is_valid(sockethandle_t handle);
+sockethandle_t pollnet_invalid_handle();
+
 pollnet_ctx* pollnet_init();
 pollnet_ctx* pollnet_get_or_init_static();
 void pollnet_shutdown(pollnet_ctx* ctx);
@@ -27,15 +29,15 @@ void pollnet_send(pollnet_ctx* ctx, sockethandle_t handle, const char* msg);
 void pollnet_send_binary(pollnet_ctx* ctx, sockethandle_t handle, const unsigned char* msg, uint32_t msgsize);
 socketstatus_t pollnet_update(pollnet_ctx* ctx, sockethandle_t handle);
 socketstatus_t pollnet_update_blocking(pollnet_ctx* ctx, sockethandle_t handle);
-int32_t pollnet_get(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
-int32_t pollnet_get_error(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
+uint32_t pollnet_get(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
+uint32_t pollnet_get_error(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
 sockethandle_t pollnet_get_connected_client_handle(pollnet_ctx* ctx, sockethandle_t handle);
 sockethandle_t pollnet_listen_ws(pollnet_ctx* ctx, const char* addr);
 sockethandle_t pollnet_serve_static_http(pollnet_ctx* ctx, const char* addr, const char* serve_dir);
 sockethandle_t pollnet_serve_http(pollnet_ctx* ctx, const char* addr);
 void pollnet_add_virtual_file(pollnet_ctx* ctx, sockethandle_t handle, const char* filename, const char* filedata, uint32_t filesize);
 void pollnet_remove_virtual_file(pollnet_ctx* ctx, sockethandle_t handle, const char* filename);
-int32_t pollnet_get_nanoid(char* dest, uint32_t dest_size);
+uint32_t pollnet_get_nanoid(char* dest, uint32_t dest_size);
 void pollnet_sleep_ms(uint32_t milliseconds);
 ]]
 
