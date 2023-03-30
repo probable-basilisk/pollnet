@@ -130,8 +130,11 @@ void pollnet_send_binary(pollnet_ctx* ctx, sockethandle_t handle, const unsigned
  * data can be queried:
  *   POLLNET_HASDATA: get data with `pollnet_get(ctx, this, ...)`
  *   POLLNET_ERROR: get error message with `pollnet_get_error(ctx, this, ...)`
- *   POLLNET_NEWCLIENT: get client socket with 
- *     `pollnet_get_connected_client_handle(ctx, this, ...)`
+ *   POLLNET_NEWCLIENT: 
+ *     get client address string with
+ *        `pollnet_get(ctx, this, ...)`
+ *     get client socket with 
+ *        `pollnet_get_connected_client_handle(ctx, this, ...)`
  *
  * A result of POLLNET_CLOSED or POLLNET_ERROR indicates the socket is dead,
  * and `pollnet_close(ctx, this)` should be called to release the handle.

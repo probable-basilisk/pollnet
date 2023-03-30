@@ -221,11 +221,12 @@ end
 
 function socket_mt:_get_message()
   local msg_size = pollnet.pollnet_get(_ctx, self._socket, self._scratch, self._scratch_size)
+  if msg_size > self._scratch_size then
+    error("Message too big: " .. msg_size .. " > " .. self._scratch_size)
+  end
   if msg_size > 0 then
     return ffi.string(self._scratch, msg_size)
   else
-    -- Important! HTTP requests can have a zero-length body and that's distinct
-    -- from not returning anything!
     return ""
   end
 end

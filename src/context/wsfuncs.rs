@@ -1,10 +1,13 @@
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
+
 use super::*;
 
-async fn accept_ws(
-    tcp_stream: TcpStream,
+async fn accept_ws<S>(
+    stream: S,
     addr: SocketAddr,
     outer_tx: std::sync::mpsc::Sender<SocketMessage>,
-) {
+) where S: AsyncRead + AsyncWrite + Unpin {
     //rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
     let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
     let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
@@ -17,7 +20,7 @@ async fn accept_ws(
         }))
         .expect("this shouldn't ever break?");
 
-    match accept_async(tcp_stream).await {
+    match accept_async(stream).await {
         Ok(mut ws_stream) => {
             tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
             loop {
@@ -30,7 +33,17 @@ async fn accept_ws(
                             Some(SocketMessage::BinaryMessage(msg)) => {
                                 ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
                             },
-                            _ => break
+                            Some(SocketMessage::Disconnect) => {
+                                debug!("Client-side disconnect.");
+                                break
+                            },
+                            None => {
+                                debug!("Client-side None?");
+                                break
+                            },
+                            _ => {
+                                error!("Invalid message to WS!");
+                            }
                         }
                     },
                     from_sock_message = ws_stream.next() => {
@@ -39,10 +52,12 @@ async fn accept_ws(
                                 tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
                             },
                             Some(Err(msg)) => {
+                                debug!("Socket error.");
                                 tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
                                 break;
                             },
                             None => {
+                                debug!("Socket disconnect.");
                                 tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
                                 break;
                             }
@@ -93,7 +108,17 @@ impl PollnetContext {
                                         debug!("Sending {:} bytes as binary", msg.len());
                                         ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
                                     },
-                                    _ => break
+                                    Some(SocketMessage::Disconnect) => {
+                                        debug!("Client-side disconnect.");
+                                        break
+                                    },
+                                    None => {
+                                        debug!("Client-side None?");
+                                        break
+                                    },
+                                    _ => {
+                                        error!("Invalid message to WS!");
+                                    }
                                 }
                             },
                             from_sock_message = ws_stream.next() => {
@@ -102,10 +127,12 @@ impl PollnetContext {
                                         tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
                                     },
                                     Some(Err(msg)) => {
+                                        debug!("Socket error");
                                         tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
                                         break;
                                     },
                                     None => {
+                                        debug!("Socket disconnect");
                                         tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
                                         break;
                                     }
