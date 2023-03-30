@@ -1,15 +1,69 @@
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
+use tokio_tungstenite::WebSocketStream;
 
 use super::*;
 
-async fn accept_ws<S>(
-    stream: S,
-    addr: SocketAddr,
-    outer_tx: std::sync::mpsc::Sender<SocketMessage>,
-) where S: AsyncRead + AsyncWrite + Unpin {
+async fn websocket_poll_loop<S>(
+    mut ws_stream: WebSocketStream<S>,
+    tx_from_sock: std::sync::mpsc::Sender<SocketMessage>,
+    mut rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+    loop {
+        tokio::select! {
+            from_c_message = rx_to_sock.recv() => {
+                match from_c_message {
+                    Some(SocketMessage::Message(msg)) => {
+                        ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
+                    },
+                    Some(SocketMessage::BinaryMessage(msg)) => {
+                        ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
+                    },
+                    Some(SocketMessage::Disconnect) => {
+                        debug!("Client-side disconnect.");
+                        break
+                    },
+                    None => {
+                        debug!("Client-side None?");
+                        break
+                    },
+                    _ => {
+                        error!("Invalid message to WS!");
+                    }
+                }
+            },
+            from_sock_message = ws_stream.next() => {
+                match from_sock_message {
+                    Some(Ok(msg)) => {
+                        tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
+                    },
+                    Some(Err(msg)) => {
+                        debug!("Socket error.");
+                        tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                        break;
+                    },
+                    None => {
+                        debug!("Socket disconnect.");
+                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+                        break;
+                    }
+                }
+            },
+        };
+    }
+    info!("Closing websocket!");
+    ws_stream.close(None).await.unwrap_or_default(); // if this errors we don't care
+}
+
+async fn accept_ws<S>(stream: S, addr: SocketAddr, outer_tx: std::sync::mpsc::Sender<SocketMessage>)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     //rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>, tx_from_sock: std::sync::mpsc::Sender<SocketMessage>) {
-    let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+    let (tx_to_sock, rx_to_sock) = tokio::sync::mpsc::channel(100);
     let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
     outer_tx
@@ -21,50 +75,51 @@ async fn accept_ws<S>(
         .expect("this shouldn't ever break?");
 
     match accept_async(stream).await {
-        Ok(mut ws_stream) => {
-            tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
-            loop {
-                tokio::select! {
-                    from_c_message = rx_to_sock.recv() => {
-                        match from_c_message {
-                            Some(SocketMessage::Message(msg)) => {
-                                ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
-                            },
-                            Some(SocketMessage::BinaryMessage(msg)) => {
-                                ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
-                            },
-                            Some(SocketMessage::Disconnect) => {
-                                debug!("Client-side disconnect.");
-                                break
-                            },
-                            None => {
-                                debug!("Client-side None?");
-                                break
-                            },
-                            _ => {
-                                error!("Invalid message to WS!");
-                            }
-                        }
-                    },
-                    from_sock_message = ws_stream.next() => {
-                        match from_sock_message {
-                            Some(Ok(msg)) => {
-                                tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
-                            },
-                            Some(Err(msg)) => {
-                                debug!("Socket error.");
-                                tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
-                                break;
-                            },
-                            None => {
-                                debug!("Socket disconnect.");
-                                tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
-                                break;
-                            }
-                        }
-                    },
-                };
-            }
+        Ok(ws_stream) => {
+            websocket_poll_loop(ws_stream, tx_from_sock, rx_to_sock).await;
+            // tx_from_sock.send(SocketMessage::Connect).expect("oh boy");
+            // loop {
+            //     tokio::select! {
+            //         from_c_message = rx_to_sock.recv() => {
+            //             match from_c_message {
+            //                 Some(SocketMessage::Message(msg)) => {
+            //                     ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
+            //                 },
+            //                 Some(SocketMessage::BinaryMessage(msg)) => {
+            //                     ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
+            //                 },
+            //                 Some(SocketMessage::Disconnect) => {
+            //                     debug!("Client-side disconnect.");
+            //                     break
+            //                 },
+            //                 None => {
+            //                     debug!("Client-side None?");
+            //                     break
+            //                 },
+            //                 _ => {
+            //                     error!("Invalid message to WS!");
+            //                 }
+            //             }
+            //         },
+            //         from_sock_message = ws_stream.next() => {
+            //             match from_sock_message {
+            //                 Some(Ok(msg)) => {
+            //                     tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
+            //                 },
+            //                 Some(Err(msg)) => {
+            //                     debug!("Socket error.");
+            //                     tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+            //                     break;
+            //                 },
+            //                 None => {
+            //                     debug!("Socket disconnect.");
+            //                     tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on disconnect");
+            //                     break;
+            //                 }
+            //             }
+            //         },
+            //     };
+            // }
         }
         Err(err) => {
             error!("connection error: {}", err);
@@ -77,7 +132,7 @@ async fn accept_ws<S>(
 
 impl PollnetContext {
     pub fn open_ws(&mut self, url: String) -> SocketHandle {
-        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
+        let (tx_to_sock, rx_to_sock) = tokio::sync::mpsc::channel(100);
         let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
 
         self.rt_handle.spawn(async move {
@@ -86,66 +141,71 @@ impl PollnetContext {
                 Ok(v) => v,
                 Err(url_err) => {
                     error!("Invalid URL: {}", url);
-                    tx_from_sock.send(SocketMessage::Error(url_err.to_string())).unwrap_or_default();
+                    tx_from_sock
+                        .send(SocketMessage::Error(url_err.to_string()))
+                        .unwrap_or_default();
                     return;
                 }
             };
 
             info!("WS client attempting to connect to {}", url);
             match connect_async(real_url).await {
-                Ok((mut ws_stream, _)) => {
-                    debug!("Connection made.");
-                    tx_from_sock.send(SocketMessage::Connect).expect("TX Error");
-                    loop {
-                        tokio::select! {
-                            from_c_message = rx_to_sock.recv() => {
-                                match from_c_message {
-                                    Some(SocketMessage::Message(msg)) => {
-                                        debug!("Sending {:} bytes as text", msg.len());
-                                        ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
-                                    },
-                                    Some(SocketMessage::BinaryMessage(msg)) => {
-                                        debug!("Sending {:} bytes as binary", msg.len());
-                                        ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
-                                    },
-                                    Some(SocketMessage::Disconnect) => {
-                                        debug!("Client-side disconnect.");
-                                        break
-                                    },
-                                    None => {
-                                        debug!("Client-side None?");
-                                        break
-                                    },
-                                    _ => {
-                                        error!("Invalid message to WS!");
-                                    }
-                                }
-                            },
-                            from_sock_message = ws_stream.next() => {
-                                match from_sock_message {
-                                    Some(Ok(msg)) => {
-                                        tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
-                                    },
-                                    Some(Err(msg)) => {
-                                        debug!("Socket error");
-                                        tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
-                                        break;
-                                    },
-                                    None => {
-                                        debug!("Socket disconnect");
-                                        tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
-                                        break;
-                                    }
-                                }
-                            },
-                        };
-                    }
-                    info!("Closing websocket!");
-                    ws_stream.close(None).await.unwrap_or_default(); // if this errors we don't care
-                },
+                Ok((ws_stream, _)) => {
+                    websocket_poll_loop(ws_stream, tx_from_sock, rx_to_sock).await;
+                    // debug!("Connection made.");
+                    // tx_from_sock.send(SocketMessage::Connect).expect("TX Error");
+                    // loop {
+                    //     tokio::select! {
+                    //         from_c_message = rx_to_sock.recv() => {
+                    //             match from_c_message {
+                    //                 Some(SocketMessage::Message(msg)) => {
+                    //                     debug!("Sending {:} bytes as text", msg.len());
+                    //                     ws_stream.send(tungstenite::protocol::Message::Text(msg)).await.expect("WS send error");
+                    //                 },
+                    //                 Some(SocketMessage::BinaryMessage(msg)) => {
+                    //                     debug!("Sending {:} bytes as binary", msg.len());
+                    //                     ws_stream.send(tungstenite::protocol::Message::Binary(msg)).await.expect("WS send error");
+                    //                 },
+                    //                 Some(SocketMessage::Disconnect) => {
+                    //                     debug!("Client-side disconnect.");
+                    //                     break
+                    //                 },
+                    //                 None => {
+                    //                     debug!("Client-side None?");
+                    //                     break
+                    //                 },
+                    //                 _ => {
+                    //                     error!("Invalid message to WS!");
+                    //                 }
+                    //             }
+                    //         },
+                    //         from_sock_message = ws_stream.next() => {
+                    //             match from_sock_message {
+                    //                 Some(Ok(msg)) => {
+                    //                     tx_from_sock.send(SocketMessage::BinaryMessage(msg.into_data())).expect("TX error on socket message");
+                    //                 },
+                    //                 Some(Err(msg)) => {
+                    //                     debug!("Socket error");
+                    //                     tx_from_sock.send(SocketMessage::Error(msg.to_string())).expect("TX error on socket error");
+                    //                     break;
+                    //                 },
+                    //                 None => {
+                    //                     debug!("Socket disconnect");
+                    //                     tx_from_sock.send(SocketMessage::Disconnect).expect("TX error on remote socket close");
+                    //                     break;
+                    //                 }
+                    //             }
+                    //         },
+                    //     };
+                    // }
+                    // info!("Closing websocket!");
+                    // ws_stream.close(None).await.unwrap_or_default(); // if this errors we don't care
+                }
                 Err(err) => {
                     error!("WS client connection error: {}", err);
-                    tx_from_sock.send(SocketMessage::Error(err.to_string())).expect("TX error on connection error");
+                    tx_from_sock
+                        .send(SocketMessage::Error(err.to_string()))
+                        .expect("TX error on connection error");
                 }
             }
         });
