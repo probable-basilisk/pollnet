@@ -17,6 +17,7 @@ http = "*"
 nanoid = "*"
 reqwest = "*"
 log = "*"
+anyhow = "^1.0.70"
 
 [dependencies.tokio]
 version = "*"
