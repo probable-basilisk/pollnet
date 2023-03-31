@@ -144,9 +144,7 @@ end
 
 function socket_mt:http_get(url, headers, ret_body_only)
   headers = format_headers(headers or "")
-  print("outgoing headers:", headers)
   ret_body_only = not not ret_body_only
-  print("body only?", ret_body_only)
   return self:_open(
     pollnet.pollnet_simple_http_get, 
     url,
@@ -267,7 +265,7 @@ function socket_mt:poll()
     if self._on_connection then
       self._on_connection(client_sock, client_addr)
     else
-      print("No connection handler! All incoming connections will be closed!")
+      print("Incoming connection but no :on_connection handler! Just closing it!")
       client_sock:close()
     end
     return true
