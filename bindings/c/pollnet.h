@@ -148,25 +148,44 @@ socketstatus_t pollnet_update(pollnet_ctx* ctx, sockethandle_t handle);
 socketstatus_t pollnet_update_blocking(pollnet_ctx* ctx, sockethandle_t handle);
 
 /*
- * Gets the message/data received by a socket during the last call to 
- * `pollnet_update`. Returns the number of bytes that were received.
- *
- * Note: if the received message is too large to fit in the destination,
- * then the full size of the message is returned but no bytes are
- * actually copied, and the message is not cleared from the socket. 
- *
- * This gives you the opportunity to allocate a larger buffer and try again.
+ * Get the size of the data/message (in bytes) received on a socket.
+ * Returns 0 if no data, or the provided socket handle is invalid.
  */
-uint32_t pollnet_get(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
+uint32_t pollnet_get_data_size(pollnet_ctx* ctx, sockethandle_t handle);
 
 /*
- * Gets the last error message posted to a socket. Returns the size of the
- * messages in bytes.
+ * Gets the message/data received by a socket during the last call to 
+ * `pollnet_update`. Copies the data into the provided buffer and returns
+ * the number of bytes copied.
  *
- * If the buffer is too small to hold the full error message, then the
- * message is truncated to the buffer size.
+ * If the received message is too large to fit in the destination,
+ * then the full size of the message is returned but no bytes are
+ * actually copied.
  */
-uint32_t pollnet_get_error(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
+uint32_t pollnet_get_data(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
+
+/*
+ * Get a pointer directly to the internal data buffer for a socket. Use
+ * `pollnet_get_data_size` to know how large the data is.
+ * Returns null if no data or socket invalid.
+ *
+ * WARNING: the returned pointer is only valid until another function
+ * is called on the given socket (including close or close_all!).
+ *
+ * To safely use this function you should either copy the data yourself
+ * somewhere, or complete all processing on the data before calling any
+ * other pollnet functions.
+ */
+const uint8_t* pollnet_unsafe_get_data_ptr(pollnet_ctx* ctx, sockethandle_t handle);
+
+/*
+ * Clears the data message on a given socket.
+ *
+ * There is typically no reason to manually call this, since
+ * updating a socket will automatically free a previous message
+ * when a new one comes in.
+ */
+void pollnet_clear_data(pollnet_ctx* ctx, sockethandle_t handle);
 
 /*
  * Gets the socket associated with a new client, as indicated by receiving

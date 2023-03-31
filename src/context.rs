@@ -86,8 +86,7 @@ pub struct PollnetSocket {
     pub status: SocketStatus,
     tx: tokio::sync::mpsc::Sender<PollnetMessage>,
     rx: std::sync::mpsc::Receiver<PollnetMessage>,
-    pub message: Option<Vec<u8>>,
-    pub error: Option<String>,
+    pub data: Option<Vec<u8>>,
     pub last_client_handle: SocketHandle,
 }
 
@@ -226,70 +225,75 @@ impl PollnetContext {
         };
 
         match sock.status {
-            SocketStatus::Open | SocketStatus::Opening => {
-                // This block is apparently impossible to move into a helper function
-                // for borrow checker "reasons"
-                let result = if blocking {
-                    sock.rx.recv().map_err(|_err| RecvError::Disconnected)
-                } else {
-                    sock.rx.try_recv().map_err(|err| match err {
-                        std::sync::mpsc::TryRecvError::Empty => RecvError::Empty,
-                        std::sync::mpsc::TryRecvError::Disconnected => RecvError::Disconnected,
-                    })
-                };
+            SocketStatus::Open | SocketStatus::Opening => (),
+            SocketStatus::Closed => return SocketResult::Closed,
+            _ => return SocketResult::Error,
+        };
 
-                match result {
-                    Ok(PollnetMessage::Connect) => {
-                        sock.status = SocketStatus::Open;
-                        SocketResult::Opening
-                    }
-                    Ok(PollnetMessage::Disconnect) | Err(RecvError::Disconnected) => {
-                        debug!("Socket disconnected.");
-                        sock.status = SocketStatus::Closed;
-                        SocketResult::Closed
-                    }
-                    Ok(PollnetMessage::Text(msg)) => {
-                        debug!("Socket text message {:} bytes", msg.len());
-                        sock.message = Some(msg.into_bytes());
-                        SocketResult::HasData
-                    }
-                    Ok(PollnetMessage::Binary(msg)) => {
-                        debug!("Socket binary message {:} bytes", msg.len());
-                        sock.message = Some(msg);
-                        SocketResult::HasData
-                    }
-                    Ok(PollnetMessage::Error(err)) => {
-                        error!("Socket error: {:}", err);
-                        sock.error = Some(err);
-                        sock.status = SocketStatus::Error;
-                        SocketResult::Error
-                    }
-                    Ok(PollnetMessage::NewClient(conn)) => {
-                        sock.message = Some(conn.id.into_bytes());
-                        let client_socket = Box::new(PollnetSocket {
-                            tx: conn.tx,
-                            rx: conn.rx,
-                            status: SocketStatus::Open, // assume client sockets start open?
-                            message: None,
-                            error: None,
-                            last_client_handle: SocketHandle::null(),
-                        });
-                        let newhandle = self.sockets.insert(client_socket);
-                        // Note this horrible hack so it won't complain about multiple mutable borrows
-                        // of self.sockets at the same time
-                        let sock2 = match self.sockets.get_mut(handle) {
-                            Some(sock) => sock,
-                            None => return SocketResult::InvalidHandle,
-                        };
-                        sock2.last_client_handle = newhandle;
-                        SocketResult::NewClient
-                    }
-                    Ok(_) => SocketResult::NoData,
-                    Err(RecvError::Empty) => SocketResult::NoData,
-                }
+        // This block is apparently impossible to move into a helper function
+        // for borrow checker "reasons"
+        let result = if blocking {
+            sock.rx.recv().map_err(|_err| RecvError::Disconnected)
+        } else {
+            sock.rx.try_recv().map_err(|err| match err {
+                std::sync::mpsc::TryRecvError::Empty => RecvError::Empty,
+                std::sync::mpsc::TryRecvError::Disconnected => RecvError::Disconnected,
+            })
+        };
+
+        match result {
+            Ok(PollnetMessage::Connect) => {
+                sock.status = SocketStatus::Open;
+                SocketResult::NoData
             }
-            SocketStatus::Closed => SocketResult::Closed,
-            _ => SocketResult::Error,
+            Ok(PollnetMessage::Disconnect) | Err(RecvError::Disconnected) => {
+                debug!("Socket disconnected.");
+                sock.status = SocketStatus::Closed;
+                SocketResult::Closed
+            }
+            Ok(PollnetMessage::Text(msg)) => {
+                debug!("Socket text message {:} bytes", msg.len());
+                sock.data = Some(msg.into_bytes());
+                SocketResult::HasData
+            }
+            Ok(PollnetMessage::Binary(msg)) => {
+                debug!("Socket binary message {:} bytes", msg.len());
+                sock.data = Some(msg);
+                SocketResult::HasData
+            }
+            Ok(PollnetMessage::Error(err)) => {
+                error!("Socket error: {:}", err);
+                sock.data = Some(err.into_bytes());
+                sock.status = SocketStatus::Error;
+                SocketResult::Error
+            }
+            Ok(PollnetMessage::NewClient(conn)) => {
+                sock.data = Some(conn.id.into_bytes());
+                let client_socket = Box::new(PollnetSocket {
+                    tx: conn.tx,
+                    rx: conn.rx,
+                    status: SocketStatus::Open, // assume client sockets start open?
+                    data: None,
+                    last_client_handle: SocketHandle::null(),
+                });
+                let newhandle = self.sockets.insert(client_socket);
+                // Note this horrible hack so it won't complain about multiple mutable borrows
+                // of self.sockets at the same time
+                let sock2 = match self.sockets.get_mut(handle) {
+                    Some(sock) => sock,
+                    None => return SocketResult::InvalidHandle,
+                };
+                sock2.last_client_handle = newhandle;
+                SocketResult::NewClient
+            }
+            Ok(PollnetMessage::FileAdd(_, _)) | Ok(PollnetMessage::FileRemove(_)) => {
+                warn!("Received FileAdd or FileRemove back from socket?");
+                SocketResult::NoData
+            }
+            Err(RecvError::Empty) => match sock.status {
+                SocketStatus::Opening => SocketResult::Opening,
+                _ => SocketResult::NoData,
+            },
         }
     }
 

@@ -267,19 +267,40 @@ pub unsafe extern "C" fn pollnet_update_blocking(ctx: *mut PollnetContext, handl
 ///
 /// ctx must be valid
 #[no_mangle]
-pub unsafe extern "C" fn pollnet_get(
+pub unsafe extern "C" fn pollnet_get_data_size(ctx: *mut PollnetContext, handle: u64) -> u32 {
+    let ctx = unsafe { &mut *ctx };
+    let socket = match ctx.sockets.get(handle.into()) {
+        Some(socket) => socket,
+        None => return 0,
+    };
+    let msgsize = match &socket.data {
+        Some(msg) => msg.len(),
+        None => 0,
+    };
+    if msgsize > u32::MAX as usize {
+        error!("Message size exceeds u32 max: {:}", msgsize);
+        return 0;
+    };
+    msgsize as u32
+}
+
+/// # Safety
+///
+/// ctx must be valid
+#[no_mangle]
+pub unsafe extern "C" fn pollnet_get_data(
     ctx: *mut PollnetContext,
     handle: u64,
     dest: *mut u8,
     dest_size: u32,
 ) -> u32 {
     let ctx = unsafe { &mut *ctx };
-    let socket = match ctx.sockets.get_mut(handle.into()) {
+    let socket = match ctx.sockets.get(handle.into()) {
         Some(socket) => socket,
         None => return 0,
     };
 
-    let msgsize = match &socket.message {
+    let msgsize = match &socket.data {
         Some(msg) => msg.len(),
         None => 0,
     };
@@ -293,7 +314,7 @@ pub unsafe extern "C" fn pollnet_get(
         return msgsize as u32;
     }
 
-    match socket.message.take() {
+    match &socket.data {
         Some(msg) => {
             let ncopy = msg.len().min(dest_size as usize);
             unsafe {
@@ -302,6 +323,36 @@ pub unsafe extern "C" fn pollnet_get(
             ncopy as u32
         }
         None => 0,
+    }
+}
+
+/// # Safety
+///
+/// ctx must be valid
+#[no_mangle]
+pub unsafe extern "C" fn pollnet_unsafe_get_data_ptr(
+    ctx: *mut PollnetContext,
+    handle: u64,
+) -> *const u8 {
+    let ctx = unsafe { &mut *ctx };
+    let socket = match ctx.sockets.get_mut(handle.into()) {
+        Some(socket) => socket,
+        None => return std::ptr::null(),
+    };
+    match &socket.data {
+        Some(msg) => msg.as_ptr(),
+        None => std::ptr::null(),
+    }
+}
+
+/// # Safety
+///
+/// ctx must be valid
+#[no_mangle]
+pub unsafe extern "C" fn pollnet_clear_data(ctx: *mut PollnetContext, handle: u64) {
+    let ctx = unsafe { &mut *ctx };
+    if let Some(socket) = ctx.sockets.get_mut(handle.into()) {
+        socket.data.take();
     }
 }
 
@@ -319,34 +370,6 @@ pub unsafe extern "C" fn pollnet_get_connected_client_handle(
         None => SocketHandle::null(),
     }
     .into()
-}
-
-/// # Safety
-///
-/// ctx must be valid
-#[no_mangle]
-pub unsafe extern "C" fn pollnet_get_error(
-    ctx: *mut PollnetContext,
-    handle: u64,
-    dest: *mut u8,
-    dest_size: u32,
-) -> u32 {
-    let ctx = unsafe { &mut *ctx };
-    let socket = match ctx.sockets.get_mut(handle.into()) {
-        Some(socket) => socket,
-        None => return 0,
-    };
-
-    match socket.error.take() {
-        Some(msg) => {
-            let ncopy = msg.len().min(dest_size as usize);
-            unsafe {
-                std::ptr::copy_nonoverlapping(msg.as_ptr(), dest, ncopy);
-            }
-            ncopy as u32
-        }
-        None => 0,
-    }
 }
 
 static mut HACKSTATICCONTEXT: *mut PollnetContext = 0 as *mut PollnetContext;

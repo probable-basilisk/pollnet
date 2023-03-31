@@ -29,7 +29,10 @@ void pollnet_send(pollnet_ctx* ctx, sockethandle_t handle, const char* msg);
 void pollnet_send_binary(pollnet_ctx* ctx, sockethandle_t handle, const unsigned char* msg, uint32_t msgsize);
 socketstatus_t pollnet_update(pollnet_ctx* ctx, sockethandle_t handle);
 socketstatus_t pollnet_update_blocking(pollnet_ctx* ctx, sockethandle_t handle);
-uint32_t pollnet_get(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
+uint32_t pollnet_get_data_size(pollnet_ctx* ctx, sockethandle_t handle);
+uint32_t pollnet_get_data(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
+const uint8_t* pollnet_unsafe_get_data_ptr(pollnet_ctx* ctx, sockethandle_t handle);
+void pollnet_clear_data(pollnet_ctx* ctx, sockethandle_t handle);
 uint32_t pollnet_get_error(pollnet_ctx* ctx, sockethandle_t handle, char* dest, uint32_t dest_size);
 sockethandle_t pollnet_get_connected_client_handle(pollnet_ctx* ctx, sockethandle_t handle);
 sockethandle_t pollnet_listen_ws(pollnet_ctx* ctx, const char* addr);
@@ -106,24 +109,18 @@ local function Socket()
   return setmetatable({}, {__index = socket_mt})
 end
 
-function socket_mt:_from_handle(scratch_size, handle)
+function socket_mt:_from_handle(handle)
   init_ctx()
   if self._socket then self:close() end
-  scratch_size = scratch_size or 64000
   self._socket = handle
-  self._scratch = ffi.new("int8_t[?]", scratch_size)
-  self._scratch_size = scratch_size
   self._status = "unpolled"
   return self
 end
 
-function socket_mt:_open(scratch_size, opener, ...)
+function socket_mt:_open(opener, ...)
   init_ctx()
   if self._socket then self:close() end
-  scratch_size = scratch_size or 64000
   self._socket = opener(_ctx, ...)
-  self._scratch = ffi.new("int8_t[?]", scratch_size)
-  self._scratch_size = scratch_size
   self._status = "unpolled"
   return self
 end
@@ -145,12 +142,12 @@ local function format_headers(headers)
   return table.concat(frags, "\n")
 end
 
-function socket_mt:http_get(url, headers, ret_body_only, scratch_size)
+function socket_mt:http_get(url, headers, ret_body_only)
   headers = format_headers(headers or "")
   print("outgoing headers:", headers)
   ret_body_only = not not ret_body_only
+  print("body only?", ret_body_only)
   return self:_open(
-    scratch_size, 
     pollnet.pollnet_simple_http_get, 
     url,
     headers,
@@ -158,14 +155,13 @@ function socket_mt:http_get(url, headers, ret_body_only, scratch_size)
   )
 end
 
-function socket_mt:http_post(url, headers, body, ret_body_only, scratch_size)
+function socket_mt:http_post(url, headers, body, ret_body_only)
   body = body or ""
   headers = format_headers(headers or {
     ["content-type"] = "application/x-www-form-urlencoded"
   })
   ret_body_only = not not ret_body_only
   return self:_open(
-    scratch_size, 
     pollnet.pollnet_simple_http_post, 
     url,
     headers,
@@ -175,20 +171,20 @@ function socket_mt:http_post(url, headers, body, ret_body_only, scratch_size)
   )
 end
 
-function socket_mt:open_ws(url, scratch_size)
-  return self:_open(scratch_size, pollnet.pollnet_open_ws, url)
+function socket_mt:open_ws(url)
+  return self:_open(pollnet.pollnet_open_ws, url)
 end
 
-function socket_mt:open_tcp(addr, scratch_size)
-  return self:_open(scratch_size, pollnet.pollnet_open_tcp, addr)
+function socket_mt:open_tcp(addr)
+  return self:_open(pollnet.pollnet_open_tcp, addr)
 end
 
-function socket_mt:serve_http(addr, dir, scratch_size)
+function socket_mt:serve_http(addr, dir)
   self.is_http_server = true
   if dir and dir ~= "" then
-    return self:_open(scratch_size, pollnet.pollnet_serve_static_http, addr, dir)
+    return self:_open(pollnet.pollnet_serve_static_http, addr, dir)
   else
-    return self:_open(scratch_size, pollnet.pollnet_serve_http, addr)
+    return self:_open(pollnet.pollnet_serve_http, addr)
   end
 end
 
@@ -206,12 +202,12 @@ function socket_mt:remove_virtual_file(filename)
   pollnet.pollnet_remove_virtual_file(_ctx, self._socket, filename)
 end
 
-function socket_mt:listen_ws(addr, scratch_size)
-  return self:_open(scratch_size, pollnet.pollnet_listen_ws, addr)
+function socket_mt:listen_ws(addr)
+  return self:_open(pollnet.pollnet_listen_ws, addr)
 end
 
-function socket_mt:listen_tcp(addr, scratch_size)
-  return self:_open(scratch_size, pollnet.pollnet_listen_tcp, addr)
+function socket_mt:listen_tcp(addr)
+  return self:_open(pollnet.pollnet_listen_tcp, addr)
 end
 
 function socket_mt:on_connection(f)
@@ -220,12 +216,16 @@ function socket_mt:on_connection(f)
 end
 
 function socket_mt:_get_message()
-  local msg_size = pollnet.pollnet_get(_ctx, self._socket, self._scratch, self._scratch_size)
-  if msg_size > self._scratch_size then
-    error("Message too big: " .. msg_size .. " > " .. self._scratch_size)
-  end
+  local msg_size = pollnet.pollnet_get_data_size(_ctx, self._socket)
   if msg_size > 0 then
-    return ffi.string(self._scratch, msg_size)
+    -- Note: unsafe_get_data_ptr requires careful consideration to use safely! 
+    -- Here we are OK because ffi.string copies the data to a new Lua string,
+    -- so we only hang on to the pointer long enough for the copy.
+    local raw_pointer = pollnet.pollnet_unsafe_get_data_ptr(_ctx, self._socket)
+    if raw_pointer == nil then 
+      error("Impossible situation: msg_size > 0 but null data pointer")
+    end
+    return ffi.string(raw_pointer, msg_size)
   else
     return ""
   end
@@ -251,7 +251,7 @@ function socket_mt:poll()
     return true
   elseif res == "error" then
     self._status = "error"
-    self._last_message = self:error_msg()
+    self._last_message = self:_get_message()
     return false, self._last_message
   elseif res == "closed" then
     self._status = "closed"
@@ -261,7 +261,7 @@ function socket_mt:poll()
     local client_addr = self:_get_message()
     local client_handle = pollnet.pollnet_get_connected_client_handle(_ctx, self._socket)
     assert(client_handle > 0)
-    local client_sock = Socket():_from_handle(self._scratch_size, client_handle)
+    local client_sock = Socket():_from_handle(client_handle)
     client_sock.parent = self
     client_sock.remote_addr = client_addr
     if self._on_connection then
@@ -277,55 +277,48 @@ end
 function socket_mt:last_message()
   return self._last_message
 end
+
 function socket_mt:status()
   return self._status
 end
+
 function socket_mt:send(msg)
   assert(self._socket)
   pollnet.pollnet_send(_ctx, self._socket, msg)
 end
+
 function socket_mt:close()
   assert(self._socket)
   pollnet.pollnet_close(_ctx, self._socket)
   self._socket = nil
 end
-function socket_mt:error_msg()
-  if not self._socket then return "No socket!" end
-  local msg_size = pollnet.pollnet_get_error(_ctx, self._socket, self._scratch, self._scratch_size)
-  if msg_size > 0 then
-    local smsg = ffi.string(self._scratch, msg_size)
-    return smsg
-  else
-    return nil
-  end
+
+local function open_ws(url)
+  return Socket():open_ws(url)
 end
 
-local function open_ws(url, scratch_size)
-  return Socket():open_ws(url, scratch_size)
+local function listen_ws(addr)
+  return Socket():listen_ws(addr)
 end
 
-local function listen_ws(addr, scratch_size)
-  return Socket():listen_ws(addr, scratch_size)
+local function open_tcp(addr)
+  return Socket():open_tcp(addr)
 end
 
-local function open_tcp(addr, scratch_size)
-  return Socket():open_tcp(addr, scratch_size)
+local function listen_tcp(addr)
+  return Socket():listen_tcp(addr)
 end
 
-local function listen_tcp(addr, scratch_size)
-  return Socket():listen_tcp(addr, scratch_size)
+local function serve_http(addr, dir)
+  return Socket():serve_http(addr, dir)
 end
 
-local function serve_http(addr, dir, scratch_size)
-  return Socket():serve_http(addr, dir, scratch_size)
+local function http_get(url, headers, return_body_only)
+  return Socket():http_get(url, headers, return_body_only)
 end
 
-local function http_get(url, return_body_only, scratch_size)
-  return Socket():http_get(url, return_body_only, scratch_size)
-end
-
-local function http_post(url, return_body_only, body, content_type, scratch_size)
-  return Socket():http_post(url, return_body_only, body, content_type, scratch_size)
+local function http_post(url, headers, body, return_body_only)
+  return Socket():http_post(url, headers, body, return_body_only)
 end
 
 local function get_nanoid()

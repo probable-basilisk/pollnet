@@ -228,8 +228,7 @@ impl PollnetContext {
             tx: tx_to_sock,
             rx: rx_from_sock,
             status: SocketStatus::Opening,
-            message: None,
-            error: None,
+            data: None,
             last_client_handle: SocketHandle::null(),
         });
         self.sockets.insert(socket)
@@ -262,8 +261,7 @@ impl PollnetContext {
             tx: tx_to_sock,
             rx: rx_from_sock,
             status: SocketStatus::Opening,
-            message: None,
-            error: None,
+            data: None,
             last_client_handle: SocketHandle::null(),
         });
         self.sockets.insert(socket)
@@ -296,8 +294,7 @@ impl PollnetContext {
             tx: tx_to_sock,
             rx: rx_from_sock,
             status: SocketStatus::Opening,
-            message: None,
-            error: None,
+            data: None,
             last_client_handle: SocketHandle::null(),
         });
         self.sockets.insert(socket)
