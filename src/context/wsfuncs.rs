@@ -7,28 +7,27 @@ use super::*;
 
 async fn websocket_poll_loop_inner<S>(
     ws_stream: &mut WebSocketStream<S>,
-    tx_from_sock: std::sync::mpsc::Sender<PollnetMessage>,
-    mut rx_to_sock: tokio::sync::mpsc::Receiver<PollnetMessage>,
+    mut io: ReactorChannels,
 ) -> anyhow::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    check_tx(tx_from_sock.send(PollnetMessage::Connect))?;
+    check_tx(io.tx.send(PollnetMessage::Connect))?;
     loop {
         tokio::select! {
-            from_c_message = rx_to_sock.recv() => {
+            from_c_message = io.rx.recv() => {
                 match from_c_message {
                     Some(PollnetMessage::Text(msg)) => {
                         if let Err(e) = ws_stream.send(Message::Text(msg)).await {
                             debug!("WS send error.");
-                            send_error(tx_from_sock, e);
+                            send_error(io.tx, e);
                             return Ok(());
                         };
                     },
                     Some(PollnetMessage::Binary(msg)) => {
                         if let Err(e) = ws_stream.send(Message::Binary(msg)).await {
                             debug!("WS send error.");
-                            send_error(tx_from_sock, e);
+                            send_error(io.tx, e);
                             return Ok(());
                         };
                     },
@@ -48,16 +47,16 @@ where
             from_sock_message = ws_stream.next() => {
                 match from_sock_message {
                     Some(Ok(msg)) => {
-                        check_tx(tx_from_sock.send(PollnetMessage::Binary(msg.into_data())))?;
+                        check_tx(io.tx.send(PollnetMessage::Binary(msg.into_data())))?;
                     },
                     Some(Err(msg)) => {
                         info!("WS error.");
-                        send_error(tx_from_sock, msg);
+                        send_error(io.tx, msg);
                         return Ok(());
                     },
                     None => {
                         info!("WS disconnect.");
-                        send_disconnect(tx_from_sock);
+                        send_disconnect(io.tx);
                         return Ok(());
                     }
                 }
@@ -66,14 +65,11 @@ where
     }
 }
 
-async fn websocket_poll_loop<S>(
-    mut ws_stream: WebSocketStream<S>,
-    tx_from_sock: std::sync::mpsc::Sender<PollnetMessage>,
-    rx_to_sock: tokio::sync::mpsc::Receiver<PollnetMessage>,
-) where
+async fn websocket_poll_loop<S>(mut ws_stream: WebSocketStream<S>, io: ReactorChannels)
+where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    if let Err(e) = websocket_poll_loop_inner(&mut ws_stream, tx_from_sock, rx_to_sock).await {
+    if let Err(e) = websocket_poll_loop_inner(&mut ws_stream, io).await {
         error!("Unexpected WS loop termination: {:?}", e);
     }
     info!("Closing websocket!");
@@ -89,14 +85,10 @@ async fn accept_ws_inner<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // rx_to_sock: tokio::sync::mpsc::Receiver<SocketMessage>
-    // tx_from_sock: std::sync::mpsc::Sender<SocketMessage>
-    let (tx_to_sock, rx_to_sock) = tokio::sync::mpsc::channel(100);
-    let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+    let (host_io, reactor_io) = create_channels();
 
     let sendres = outer_tx.send(PollnetMessage::NewClient(ClientConn {
-        tx: tx_to_sock,
-        rx: rx_from_sock,
+        io: host_io,
         id: addr.to_string(),
     }));
     if sendres.is_err() {
@@ -106,11 +98,11 @@ where
 
     match accept_async(stream).await {
         Ok(ws_stream) => {
-            websocket_poll_loop(ws_stream, tx_from_sock, rx_to_sock).await;
+            websocket_poll_loop(ws_stream, reactor_io).await;
         }
         Err(err) => {
             error!("connection error: {}", err);
-            send_error(tx_from_sock, err);
+            send_error(reactor_io.tx, err);
         }
     }
     Ok(())
@@ -130,8 +122,7 @@ async fn accept_ws<S>(
 
 impl PollnetContext {
     pub fn open_ws(&mut self, url: String) -> SocketHandle {
-        let (tx_to_sock, rx_to_sock) = tokio::sync::mpsc::channel(100);
-        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+        let (host_io, reactor_io) = create_channels();
 
         self.rt_handle.spawn(async move {
             info!("WS client spawned");
@@ -139,7 +130,7 @@ impl PollnetContext {
                 Ok(v) => v,
                 Err(url_err) => {
                     error!("Invalid URL: {}", url);
-                    send_error(tx_from_sock, url_err);
+                    send_error(reactor_io.tx, url_err);
                     return;
                 }
             };
@@ -147,18 +138,17 @@ impl PollnetContext {
             info!("WS client attempting to connect to {}", url);
             match connect_async(real_url).await {
                 Ok((ws_stream, _)) => {
-                    websocket_poll_loop(ws_stream, tx_from_sock, rx_to_sock).await;
+                    websocket_poll_loop(ws_stream, reactor_io).await;
                 }
                 Err(err) => {
                     error!("WS client connection error: {}", err);
-                    send_error(tx_from_sock, err);
+                    send_error(reactor_io.tx, err);
                 }
             }
         });
 
         let socket = Box::new(PollnetSocket {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: Some(host_io),
             status: SocketStatus::Opening,
             data: None,
             last_client_handle: SocketHandle::null(),
@@ -167,26 +157,25 @@ impl PollnetContext {
     }
 
     pub fn listen_ws(&mut self, addr: String) -> SocketHandle {
-        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
-        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+        let (host_io, mut reactor_io) = create_channels();
 
         self.rt_handle.spawn(async move {
             info!("WS server spawned");
             let listener = match TcpListener::bind(&addr).await {
                 Ok(listener) => listener,
                 Err(tcp_err) => {
-                    send_error(tx_from_sock, tcp_err);
+                    send_error(reactor_io.tx, tcp_err);
                     return;
                 }
             };
             info!("WS server waiting for connections on {}", addr);
-            if tx_from_sock.send(PollnetMessage::Connect).is_err() {
+            if reactor_io.tx.send(PollnetMessage::Connect).is_err() {
                 error!("Channel died before entering serve loop!");
                 return;
             }
             loop {
                 tokio::select! {
-                    from_c_message = rx_to_sock.recv() => {
+                    from_c_message = reactor_io.rx.recv() => {
                         match from_c_message {
                             Some(PollnetMessage::Text(_msg)) => {}, // server socket ignores sends
                             _ => break
@@ -195,10 +184,10 @@ impl PollnetContext {
                     new_client = listener.accept() => {
                         match new_client {
                             Ok((tcp_stream, addr)) => {
-                                tokio::spawn(accept_ws(tcp_stream, addr, tx_from_sock.clone()));
+                                tokio::spawn(accept_ws(tcp_stream, addr, reactor_io.tx.clone()));
                             },
                             Err(msg) => {
-                                send_error(tx_from_sock, msg);
+                                send_error(reactor_io.tx, msg);
                                 break;
                             }
                         }
@@ -208,8 +197,7 @@ impl PollnetContext {
         });
 
         let socket = Box::new(PollnetSocket {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: Some(host_io),
             status: SocketStatus::Opening,
             data: None,
             last_client_handle: SocketHandle::null(),

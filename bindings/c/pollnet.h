@@ -9,20 +9,20 @@ typedef uint32_t socketstatus_t;
  * Result codes
  */
 
-// This handle is invalid or doesn't correspond to a socket
+// Handle is invalid or doesn't correspond to a socket
 #define POLLNET_INVALID   0
-// This socket was closed
-#define POLLNET_CLOSED    1
-// This socket is the process of opening
-#define POLLNET_OPENING   2
-// No messages/data were received on this socket
-#define POLLNET_NODATA    3
-// A message/data was received
-#define POLLNET_HASDATA   4
-// An error occured
-#define POLLNET_ERROR     5
-// A new client connected on this server socket
-#define POLLNET_NEWCLIENT 6
+// Socket has had an error
+#define POLLNET_ERROR     1
+// Socket is closed
+#define POLLNET_CLOSED    2
+// Socket is the process of opening
+#define POLLNET_OPENING   3
+// Socket is open but has no data right now
+#define POLLNET_OPEN_NODATA    4
+// Socket is open and has data available
+#define POLLNET_OPEN_HASDATA   5
+// Socket is open and has a new client connection
+#define POLLNET_OPEN_NEWCLIENT 6
 
 /*
  * Get pollnet version as a MAJOR.MINOR.PATCH semver string

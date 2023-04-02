@@ -57,39 +57,48 @@ pub enum RecvError {
 }
 
 #[derive(Copy, Clone)]
-pub enum SocketResult {
-    InvalidHandle,
-    Closed,
-    Opening,
-    NoData,
-    HasData,
-    Error,
-    NewClient,
-}
-
-#[derive(Copy, Clone)]
 pub enum SocketStatus {
     InvalidHandle,
-    Closed,
-    Open,
-    Opening,
     Error,
+    Closed,
+    Opening,
+    OpenNoData,
+    OpenHasData,
+    OpenNewClient,
 }
 
-impl From<SocketResult> for u32 {
-    fn from(item: SocketResult) -> Self {
-        item as u32
-    }
-}
 impl From<SocketStatus> for u32 {
     fn from(item: SocketStatus) -> Self {
         item as u32
     }
 }
 
+struct HostChannels {
+    pub tx: tokio::sync::mpsc::Sender<PollnetMessage>,
+    pub rx: std::sync::mpsc::Receiver<PollnetMessage>,
+}
+
+struct ReactorChannels {
+    pub tx: std::sync::mpsc::Sender<PollnetMessage>,
+    pub rx: tokio::sync::mpsc::Receiver<PollnetMessage>,
+}
+
+fn create_channels() -> (HostChannels, ReactorChannels) {
+    let (tx_to_sock, rx_to_sock) = tokio::sync::mpsc::channel(100);
+    let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+    let hc = HostChannels {
+        tx: tx_to_sock,
+        rx: rx_from_sock,
+    };
+    let rc = ReactorChannels {
+        tx: tx_from_sock,
+        rx: rx_to_sock,
+    };
+    (hc, rc)
+}
+
 struct ClientConn {
-    tx: tokio::sync::mpsc::Sender<PollnetMessage>,
-    rx: std::sync::mpsc::Receiver<PollnetMessage>,
+    io: HostChannels,
     id: String,
 }
 
@@ -106,8 +115,7 @@ enum PollnetMessage {
 
 pub struct PollnetSocket {
     pub status: SocketStatus,
-    tx: tokio::sync::mpsc::Sender<PollnetMessage>,
-    rx: std::sync::mpsc::Receiver<PollnetMessage>,
+    io: Option<HostChannels>,
     pub data: Option<Vec<u8>>,
     pub last_client_handle: SocketHandle,
 }
@@ -162,29 +170,22 @@ impl PollnetContext {
     pub fn close_all(&mut self) {
         info!("Closing all sockets!");
         for (_, sock) in self.sockets.iter_mut() {
-            match sock.status {
-                SocketStatus::Open | SocketStatus::Opening => {
-                    // don't care about errors at this point
-                    block_on(sock.tx.send(PollnetMessage::Disconnect)).unwrap_or_default();
-                    sock.status = SocketStatus::Closed;
-                }
-                _ => (),
+            if let Some(chans) = &sock.io {
+                block_on(chans.tx.send(PollnetMessage::Disconnect)).unwrap_or_default();
             }
+            sock.io.take();
+            sock.status = SocketStatus::Closed;
         }
         self.sockets.clear(); // everything should be closed and safely droppable
     }
 
     pub fn close(&mut self, handle: SocketHandle) {
         if let Some(sock) = self.sockets.get_mut(handle) {
-            match sock.status {
-                SocketStatus::Open | SocketStatus::Opening => {
-                    if let Err(e) = block_on(sock.tx.send(PollnetMessage::Disconnect)) {
-                        warn!("Socket already closed from other end: {:}", e);
-                    }
-                    sock.status = SocketStatus::Closed;
+            if let Some(chans) = &sock.io {
+                if let Err(e) = block_on(chans.tx.send(PollnetMessage::Disconnect)) {
+                    warn!("Socket already closed from other end: {:}", e);
                 }
-                _ => (),
-            };
+            }
             debug!("Removing handle: {:?}", handle);
             // Note: since we don't wait here for any kind of "disconnect" reply,
             // a socket that has been closed should just return without sending a reply
@@ -194,107 +195,103 @@ impl PollnetContext {
 
     pub fn send(&mut self, handle: SocketHandle, msg: String) {
         if let Some(sock) = self.sockets.get_mut(handle) {
-            match sock.status {
-                SocketStatus::Open | SocketStatus::Opening => sock
+            if let Some(chans) = &sock.io {
+                chans
                     .tx
                     .try_send(PollnetMessage::Text(msg))
-                    .unwrap_or_default(),
-                _ => (),
-            };
+                    .unwrap_or_default();
+            }
         }
     }
 
     pub fn send_binary(&mut self, handle: SocketHandle, msg: Vec<u8>) {
         if let Some(sock) = self.sockets.get_mut(handle) {
-            match sock.status {
-                SocketStatus::Open | SocketStatus::Opening => sock
+            if let Some(chans) = &sock.io {
+                chans
                     .tx
                     .try_send(PollnetMessage::Binary(msg))
-                    .unwrap_or_default(),
-                _ => (),
+                    .unwrap_or_default();
             };
         }
     }
 
     pub fn add_virtual_file(&mut self, handle: SocketHandle, filename: String, filedata: Vec<u8>) {
         if let Some(sock) = self.sockets.get_mut(handle) {
-            match sock.status {
-                SocketStatus::Open | SocketStatus::Opening => sock
+            if let Some(chans) = &sock.io {
+                chans
                     .tx
                     .try_send(PollnetMessage::FileAdd(filename, filedata))
-                    .unwrap_or_default(),
-                _ => (),
+                    .unwrap_or_default();
             };
         }
     }
 
     pub fn remove_virtual_file(&mut self, handle: SocketHandle, filename: String) {
         if let Some(sock) = self.sockets.get_mut(handle) {
-            match sock.status {
-                SocketStatus::Open | SocketStatus::Opening => sock
+            if let Some(chans) = &sock.io {
+                chans
                     .tx
                     .try_send(PollnetMessage::FileRemove(filename))
-                    .unwrap_or_default(),
-                _ => (),
+                    .unwrap_or_default();
             };
         }
     }
 
-    pub fn update(&mut self, handle: SocketHandle, blocking: bool) -> SocketResult {
+    pub fn update(&mut self, handle: SocketHandle, blocking: bool) -> SocketStatus {
         let sock = match self.sockets.get_mut(handle) {
             Some(sock) => sock,
-            None => return SocketResult::InvalidHandle,
+            None => return SocketStatus::InvalidHandle,
         };
 
-        match sock.status {
-            SocketStatus::Open | SocketStatus::Opening => (),
-            SocketStatus::Closed => return SocketResult::Closed,
-            _ => return SocketResult::Error,
+        let rx = match &sock.io {
+            Some(chans) => &chans.rx,
+            None => return sock.status,
         };
 
         // This block is apparently impossible to move into a helper function
         // for borrow checker "reasons"
         let result = if blocking {
-            sock.rx.recv().map_err(|_err| RecvError::Disconnected)
+            rx.recv().map_err(|_err| RecvError::Disconnected)
         } else {
-            sock.rx.try_recv().map_err(|err| match err {
+            rx.try_recv().map_err(|err| match err {
                 std::sync::mpsc::TryRecvError::Empty => RecvError::Empty,
                 std::sync::mpsc::TryRecvError::Disconnected => RecvError::Disconnected,
             })
         };
 
         match result {
-            Ok(PollnetMessage::Connect) => {
-                sock.status = SocketStatus::Open;
-                SocketResult::NoData
-            }
+            Ok(PollnetMessage::Connect) => SocketStatus::OpenNoData,
             Ok(PollnetMessage::Disconnect) | Err(RecvError::Disconnected) => {
                 debug!("Socket disconnected.");
+                sock.io.take();
                 sock.status = SocketStatus::Closed;
-                SocketResult::Closed
+                sock.status
             }
             Ok(PollnetMessage::Text(msg)) => {
                 debug!("Socket text message {:} bytes", msg.len());
                 sock.data = Some(msg.into_bytes());
-                SocketResult::HasData
+                sock.status = SocketStatus::OpenHasData;
+                sock.status
             }
             Ok(PollnetMessage::Binary(msg)) => {
                 debug!("Socket binary message {:} bytes", msg.len());
                 sock.data = Some(msg);
-                SocketResult::HasData
+                sock.status = SocketStatus::OpenHasData;
+                sock.status
             }
             Ok(PollnetMessage::Error(err)) => {
                 error!("Socket error: {:}", err);
                 sock.data = Some(err.into_bytes());
+                sock.io.take();
                 sock.status = SocketStatus::Error;
-                SocketResult::Error
+                sock.status
             }
             Ok(PollnetMessage::NewClient(conn)) => {
                 sock.data = Some(conn.id.into_bytes());
+                sock.status = SocketStatus::OpenNewClient;
                 let client_socket = Box::new(PollnetSocket {
-                    tx: conn.tx,
-                    rx: conn.rx,
-                    status: SocketStatus::Open, // assume client sockets start open?
+                    io: Some(conn.io),
+                    status: SocketStatus::OpenNoData, // assume client sockets start open?
                     data: None,
                     last_client_handle: SocketHandle::null(),
                 });
@@ -303,19 +300,24 @@ impl PollnetContext {
                 // of self.sockets at the same time
                 let sock2 = match self.sockets.get_mut(handle) {
                     Some(sock) => sock,
-                    None => return SocketResult::InvalidHandle,
+                    None => return SocketStatus::InvalidHandle,
                 };
                 sock2.last_client_handle = newhandle;
-                SocketResult::NewClient
+                SocketStatus::OpenNewClient
             }
             Ok(PollnetMessage::FileAdd(_, _)) | Ok(PollnetMessage::FileRemove(_)) => {
                 warn!("Received FileAdd or FileRemove back from socket?");
-                SocketResult::NoData
+                sock.status = SocketStatus::OpenNoData;
+                sock.status
             }
-            Err(RecvError::Empty) => match sock.status {
-                SocketStatus::Opening => SocketResult::Opening,
-                _ => SocketResult::NoData,
-            },
+            Err(RecvError::Empty) => {
+                // clear previous data if any
+                sock.data.take();
+                match sock.status {
+                    SocketStatus::Opening => SocketStatus::Opening,
+                    _ => SocketStatus::OpenNoData,
+                }
+            }
         }
     }
 

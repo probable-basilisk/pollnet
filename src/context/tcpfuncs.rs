@@ -1,28 +1,24 @@
 use super::*;
 
-async fn tcp_poll_loop(
-    tcp_stream: &mut TcpStream,
-    tx_from_sock: std::sync::mpsc::Sender<PollnetMessage>,
-    mut rx_to_sock: tokio::sync::mpsc::Receiver<PollnetMessage>,
-) -> anyhow::Result<()> {
-    check_tx(tx_from_sock.send(PollnetMessage::Connect))?;
+async fn tcp_poll_loop(tcp_stream: &mut TcpStream, mut io: ReactorChannels) -> anyhow::Result<()> {
+    check_tx(io.tx.send(PollnetMessage::Connect))?;
     // TODO: should this be bigger? Or automatically grow or something?
     let mut buf = [0; 65536];
     loop {
         tokio::select! {
-            from_c_message = rx_to_sock.recv() => {
+            from_c_message = io.rx.recv() => {
                 match from_c_message {
                     Some(PollnetMessage::Text(msg)) => {
                         if let Err(e) = tcp_stream.write_all(msg.as_bytes()).await {
                             debug!("TCP send error.");
-                            send_error(tx_from_sock, e);
+                            send_error(io.tx, e);
                             return Ok(());
                         }
                     },
                     Some(PollnetMessage::Binary(msg)) => {
                         if let Err(e) = tcp_stream.write_all(&msg).await {
                             debug!("TCP send error.");
-                            send_error(tx_from_sock, e);
+                            send_error(io.tx, e);
                             return Ok(());
                         }
                     },
@@ -38,20 +34,20 @@ async fn tcp_poll_loop(
                 match tcp_stream.try_read(&mut buf){
                     Ok(0) => {
                         // Reading zero bytes indicates that the stream has closed
-                        send_disconnect(tx_from_sock);
+                        send_disconnect(io.tx);
                         return Ok(());
                     },
                     Ok(n) => {
                         // TODO: can we avoid these copies? Does it matter?
                         debug!("TCP read {:} bytes!", n);
                         let submessage = buf[0..n].to_vec();
-                        check_tx(tx_from_sock.send(PollnetMessage::Binary(submessage)))?;
+                        check_tx(io.tx.send(PollnetMessage::Binary(submessage)))?;
                     },
                     Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
                         // no effect?
                     },
                     Err(err) => {
-                        send_error(tx_from_sock, err);
+                        send_error(io.tx, err);
                         return Ok(())
                     },
                 }
@@ -65,21 +61,16 @@ async fn accept_tcp(
     addr: SocketAddr,
     outer_tx: std::sync::mpsc::Sender<PollnetMessage>,
 ) {
-    let (tx_to_sock, rx_to_sock) = tokio::sync::mpsc::channel(100);
-    let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+    let (host_io, reactor_io) = create_channels();
 
     if outer_tx
         .send(PollnetMessage::NewClient(ClientConn {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: host_io,
             id: addr.to_string(),
         }))
         .is_ok()
     {
-        if tcp_poll_loop(&mut tcp_stream, tx_from_sock, rx_to_sock)
-            .await
-            .is_err()
-        {
+        if tcp_poll_loop(&mut tcp_stream, reactor_io).await.is_err() {
             warn!("Unexpected poll loop termination in TCP socket.");
         }
     } else {
@@ -134,8 +125,10 @@ impl PollnetContext {
         });
 
         let socket = Box::new(PollnetSocket {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: Some(HostChannels {
+                tx: tx_to_sock,
+                rx: rx_from_sock,
+            }),
             status: SocketStatus::Opening,
             data: None,
             last_client_handle: SocketHandle::null(),
@@ -144,17 +137,13 @@ impl PollnetContext {
     }
 
     pub fn open_tcp(&mut self, addr: String) -> SocketHandle {
-        let (tx_to_sock, rx_to_sock) = tokio::sync::mpsc::channel(100);
-        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+        let (host_io, reactor_io) = create_channels();
 
         self.rt_handle.spawn(async move {
             info!("TCP client attempting to connect to {}", addr);
             match TcpStream::connect(addr).await {
                 Ok(mut tcp_stream) => {
-                    if tcp_poll_loop(&mut tcp_stream, tx_from_sock, rx_to_sock)
-                        .await
-                        .is_err()
-                    {
+                    if tcp_poll_loop(&mut tcp_stream, reactor_io).await.is_err() {
                         warn!("Unexpected poll loop termination in TCP socket.");
                     }
                     info!("Closing TCP socket!");
@@ -162,14 +151,13 @@ impl PollnetContext {
                 }
                 Err(err) => {
                     error!("TCP client connection error: {}", err);
-                    send_error(tx_from_sock, err);
+                    send_error(reactor_io.tx, err);
                 }
             }
         });
 
         let socket = Box::new(PollnetSocket {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: Some(host_io),
             status: SocketStatus::Opening,
             data: None,
             last_client_handle: SocketHandle::null(),

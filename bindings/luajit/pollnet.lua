@@ -75,11 +75,11 @@ end
 
 local POLLNET_RESULT_CODES = {
   [0] = "invalid_handle",
-  [1] = "closed",
-  [2] = "opening",
-  [3] = "nodata",
-  [4] = "hasdata",
-  [5] = "error",
+  [1] = "error",
+  [2] = "closed",
+  [3] = "opening",
+  [4] = "nodata",
+  [5] = "hasdata",
   [6] = "newclient"
 }
 

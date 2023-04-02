@@ -154,8 +154,7 @@ async fn handle_http_response(
 
 impl PollnetContext {
     pub fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> SocketHandle {
-        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
-        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+        let (host_io, mut reactor_io) = create_channels();
 
         // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
@@ -165,7 +164,7 @@ impl PollnetContext {
                 Ok(v) => v,
                 Err(e) => {
                     error!("Invalid TCP address: {}", bind_addr);
-                    send_error(tx_from_sock, format!("Invalid TCP address: {:?}", e));
+                    send_error(reactor_io.tx, format!("Invalid TCP address: {:?}", e));
                     return;
                 }
             };
@@ -189,7 +188,7 @@ impl PollnetContext {
             let server = match hyper::Server::try_bind(&addr) {
                 Err(bind_err) => {
                     error!("Couldn't bind {}: {}", bind_addr, bind_err);
-                    send_error(tx_from_sock, bind_err);
+                    send_error(reactor_io.tx, bind_err);
                     return;
                 }
                 Ok(server) => server,
@@ -198,7 +197,7 @@ impl PollnetContext {
             let graceful = server.with_graceful_shutdown(async move {
                 let virtual_files = virtual_files_two_the_clone_wars.clone();
                 loop {
-                    match rx_to_sock.recv().await {
+                    match reactor_io.rx.recv().await {
                         Some(PollnetMessage::Disconnect)
                         | Some(PollnetMessage::Error(_))
                         | None => break,
@@ -222,14 +221,13 @@ impl PollnetContext {
             });
             info!("HTTP server running on http://{}/", addr);
             if let Err(err) = graceful.await {
-                send_error(tx_from_sock, err);
+                send_error(reactor_io.tx, err);
             }
             info!("HTTP server stopped.");
         });
 
         let socket = Box::new(PollnetSocket {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: Some(host_io),
             status: SocketStatus::Opening,
             data: None,
             last_client_handle: SocketHandle::null(),
@@ -243,17 +241,16 @@ impl PollnetContext {
         headers: String,
         ret_body_only: bool,
     ) -> SocketHandle {
-        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
-        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+        let (host_io, mut reactor_io) = create_channels();
 
         self.rt_handle.spawn(async move {
-            let get_handler = handle_get(url, headers, ret_body_only, tx_from_sock);
+            let get_handler = handle_get(url, headers, ret_body_only, reactor_io.tx);
             tokio::pin!(get_handler);
             loop {
                 tokio::select! {
                     // handle_get will send the disconnect message after completion
                     _ = &mut get_handler => break,
-                    from_c_message = rx_to_sock.recv() => {
+                    from_c_message = reactor_io.rx.recv() => {
                         match from_c_message {
                             Some(PollnetMessage::Disconnect) | None => break,
                             _ => ()
@@ -264,8 +261,7 @@ impl PollnetContext {
         });
 
         let socket = Box::new(PollnetSocket {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: Some(host_io),
             status: SocketStatus::Opening,
             data: None,
             last_client_handle: SocketHandle::null(),
@@ -280,16 +276,15 @@ impl PollnetContext {
         body: Vec<u8>,
         ret_body_only: bool,
     ) -> SocketHandle {
-        let (tx_to_sock, mut rx_to_sock) = tokio::sync::mpsc::channel(100);
-        let (tx_from_sock, rx_from_sock) = std::sync::mpsc::channel();
+        let (host_io, mut reactor_io) = create_channels();
 
         self.rt_handle.spawn(async move {
-            let post_handler = handle_post(url, headers, body, ret_body_only, tx_from_sock);
+            let post_handler = handle_post(url, headers, body, ret_body_only, reactor_io.tx);
             tokio::pin!(post_handler);
             loop {
                 tokio::select! {
                     _ = &mut post_handler => break,
-                    from_c_message = rx_to_sock.recv() => {
+                    from_c_message = reactor_io.rx.recv() => {
                         match from_c_message {
                             Some(PollnetMessage::Disconnect) | None => break,
                             _ => ()
@@ -300,8 +295,7 @@ impl PollnetContext {
         });
 
         let socket = Box::new(PollnetSocket {
-            tx: tx_to_sock,
-            rx: rx_from_sock,
+            io: Some(host_io),
             status: SocketStatus::Opening,
             data: None,
             last_client_handle: SocketHandle::null(),
