@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use futures::executor::block_on;
 use futures_util::{future, SinkExt, StreamExt};
 use log::{debug, error, info, warn};
@@ -12,6 +13,27 @@ use tokio_tungstenite::{accept_async, connect_async};
 mod httpfuncs;
 mod tcpfuncs;
 mod wsfuncs;
+
+// SendErrors are ironically not themselves sync so this
+// function just turns any send error into an anyhow string error
+fn check_tx<T>(r: Result<(), std::sync::mpsc::SendError<T>>) -> anyhow::Result<()> {
+    r.map_err(|_| anyhow!("Channel TX Error"))
+}
+
+fn send_error<T>(tx: std::sync::mpsc::Sender<PollnetMessage>, msg: T)
+where
+    T: ToString,
+{
+    if tx.send(PollnetMessage::Error(msg.to_string())).is_err() {
+        warn!("TX error sending error.")
+    }
+}
+
+fn send_disconnect(tx: std::sync::mpsc::Sender<PollnetMessage>) {
+    if tx.send(PollnetMessage::Disconnect).is_err() {
+        warn!("TX error sending disconnect.")
+    }
+}
 
 slotmap::new_key_type! {
   pub struct SocketHandle;
