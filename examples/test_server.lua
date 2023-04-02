@@ -60,16 +60,20 @@ local function client_handler(prefix)
   end
 end
 
-local SCRATCH = 1000000
-
 add_thread("ws_server", function()
-  local ws_server_sock = pollnet.listen_ws("0.0.0.0:9090", SCRATCH)
+  local ws_server_sock = pollnet.listen_ws("0.0.0.0:9090")
   ws_server_sock:on_connection(client_handler("WS"))
   pollsock("WS_SERVER", ws_server_sock)
 end)
 
+add_thread("ws_server_ipv6", function()
+  local ws_server_sock = pollnet.listen_ws("[::]:9090")
+  ws_server_sock:on_connection(client_handler("WS_IPV6"))
+  pollsock("WS_SERVER_IPV6", ws_server_sock)
+end)
+
 add_thread("tcp_server", function()
-  local tcp_server_sock = pollnet.listen_tcp("0.0.0.0:6000", SCRATCH)
+  local tcp_server_sock = pollnet.listen_tcp("0.0.0.0:6000")
   tcp_server_sock:on_connection(client_handler("TCP"))
   pollsock("TCP_SERVER", tcp_server_sock)
 end)

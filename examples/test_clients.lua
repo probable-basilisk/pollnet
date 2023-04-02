@@ -76,6 +76,13 @@ local function test_local_ws()
   sock:send("HELLO")
   local res = sync_get_messages(sock, 1)
   expect(res[1], "ECHO:HELLO", "WS round trip")
+
+  -- test IPV6 websocket
+  local sock = pollnet.open_ws("ws://[::1]:9090")
+  sync_sleep(OPEN_DELAY_MS)
+  sock:send("HELLO")
+  local res = sync_get_messages(sock, 1)
+  expect(res[1], "ECHO:HELLO", "WS (IPV6) round trip")
 end
 
 local function test_local_tcp()
