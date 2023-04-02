@@ -4,13 +4,6 @@ use tokio_tungstenite::WebSocketStream;
 use tungstenite::protocol::Message;
 
 use super::*;
-use anyhow::anyhow;
-
-// SendErrors are ironically not themselves sync so this
-// function just turns any send error into an anyhow string error
-fn eh<T>(r: Result<(), std::sync::mpsc::SendError<T>>) -> anyhow::Result<()> {
-    r.map_err(|_| anyhow!("Channel TX Error"))
-}
 
 async fn websocket_poll_loop_inner<S>(
     ws_stream: &mut WebSocketStream<S>,
@@ -20,7 +13,7 @@ async fn websocket_poll_loop_inner<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    eh(tx_from_sock.send(PollnetMessage::Connect))?;
+    check_tx(tx_from_sock.send(PollnetMessage::Connect))?;
     loop {
         tokio::select! {
             from_c_message = rx_to_sock.recv() => {
@@ -28,15 +21,13 @@ where
                     Some(PollnetMessage::Text(msg)) => {
                         if let Err(e) = ws_stream.send(Message::Text(msg)).await {
                             debug!("WS send error.");
-                            eh(tx_from_sock.send(PollnetMessage::Error(e.to_string())))?;
-                            return Ok(());
+                            return check_tx(tx_from_sock.send(PollnetMessage::Error(e.to_string())));
                         };
                     },
                     Some(PollnetMessage::Binary(msg)) => {
                         if let Err(e) = ws_stream.send(Message::Binary(msg)).await {
                             debug!("WS send error.");
-                            eh(tx_from_sock.send(PollnetMessage::Error(e.to_string())))?;
-                            return Ok(());
+                            return check_tx(tx_from_sock.send(PollnetMessage::Error(e.to_string())));
                         };
                     },
                     Some(PollnetMessage::Disconnect) => {
@@ -55,17 +46,15 @@ where
             from_sock_message = ws_stream.next() => {
                 match from_sock_message {
                     Some(Ok(msg)) => {
-                        eh(tx_from_sock.send(PollnetMessage::Binary(msg.into_data())))?;
+                        check_tx(tx_from_sock.send(PollnetMessage::Binary(msg.into_data())))?;
                     },
                     Some(Err(msg)) => {
                         info!("WS error.");
-                        eh(tx_from_sock.send(PollnetMessage::Error(msg.to_string())))?;
-                        return Ok(());
+                        return check_tx(tx_from_sock.send(PollnetMessage::Error(msg.to_string())));
                     },
                     None => {
                         info!("WS disconnect.");
-                        eh(tx_from_sock.send(PollnetMessage::Disconnect))?;
-                        return Ok(());
+                        return check_tx(tx_from_sock.send(PollnetMessage::Disconnect));
                     }
                 }
             },
@@ -108,7 +97,7 @@ where
     }));
     if sendres.is_err() {
         stream.shutdown().await.unwrap_or_default();
-        return Err(anyhow!("Fuck"));
+        return Err(anyhow!("Broken TX?"));
     }
 
     match accept_async(stream).await {
@@ -117,7 +106,7 @@ where
         }
         Err(err) => {
             error!("connection error: {}", err);
-            eh(tx_from_sock.send(PollnetMessage::Error(err.to_string())))?;
+            check_tx(tx_from_sock.send(PollnetMessage::Error(err.to_string())))?;
         }
     }
     Ok(())
@@ -146,9 +135,7 @@ impl PollnetContext {
                 Ok(v) => v,
                 Err(url_err) => {
                     error!("Invalid URL: {}", url);
-                    tx_from_sock
-                        .send(PollnetMessage::Error(url_err.to_string()))
-                        .unwrap_or_default();
+                    final_tx(tx_from_sock.send(PollnetMessage::Error(url_err.to_string())));
                     return;
                 }
             };
@@ -160,9 +147,7 @@ impl PollnetContext {
                 }
                 Err(err) => {
                     error!("WS client connection error: {}", err);
-                    tx_from_sock
-                        .send(PollnetMessage::Error(err.to_string()))
-                        .unwrap_or_default();
+                    final_tx(tx_from_sock.send(PollnetMessage::Error(err.to_string())));
                 }
             }
         });
@@ -186,7 +171,7 @@ impl PollnetContext {
             let listener = match TcpListener::bind(&addr).await {
                 Ok(listener) => listener,
                 Err(tcp_err) => {
-                    tx_from_sock.send(PollnetMessage::Error(tcp_err.to_string())).unwrap_or_default();
+                    final_tx(tx_from_sock.send(PollnetMessage::Error(tcp_err.to_string())));
                     return;
                 }
             };
@@ -209,7 +194,7 @@ impl PollnetContext {
                                 tokio::spawn(accept_ws(tcp_stream, addr, tx_from_sock.clone()));
                             },
                             Err(msg) => {
-                                tx_from_sock.send(PollnetMessage::Error(msg.to_string())).unwrap_or_default();
+                                final_tx(tx_from_sock.send(PollnetMessage::Error(msg.to_string())));
                                 break;
                             }
                         }

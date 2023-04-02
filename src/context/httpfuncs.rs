@@ -50,7 +50,9 @@ async fn handle_get(
         //.timeout(timeout)
         .send()
         .await;
-    handle_http_response(resp, body_only, dest).await;
+    if handle_http_response(resp, body_only, dest).await.is_err() {
+        warn!("HTTP GET socket closed at weird time.");
+    }
 }
 
 async fn handle_post(
@@ -68,7 +70,12 @@ async fn handle_post(
         .body(body)
         .send()
         .await;
-    handle_http_response(resp, ret_body_only, dest).await;
+    if handle_http_response(resp, ret_body_only, dest)
+        .await
+        .is_err()
+    {
+        warn!("HTTP POST socket closed at weird time.");
+    }
 }
 
 fn parse_header_line(line: &str) -> Option<(HeaderName, &str)> {
@@ -114,38 +121,35 @@ async fn handle_http_response(
     resp: reqwest::Result<reqwest::Response>,
     ret_body_only: bool,
     dest: std::sync::mpsc::Sender<PollnetMessage>,
-) {
+) -> anyhow::Result<()> {
     let resp = match resp {
         Ok(resp) => resp,
         Err(err) => {
-            error!("HTTP failed: {}", err);
-            dest.send(PollnetMessage::Error(err.to_string()))
-                .expect("TX error sending error!");
-            return;
+            info!("HTTP failed: {}", err);
+            send_error(dest, err.to_string());
+            return Ok(());
         }
     };
     if !ret_body_only {
         let statuscode = resp.status().to_string();
-        dest.send(PollnetMessage::Binary(statuscode.into()))
-            .expect("TX error on http status");
+        check_tx(dest.send(PollnetMessage::Binary(statuscode.into())))?;
         let headers = format_headers(resp.headers());
-        dest.send(PollnetMessage::Binary(headers.into()))
-            .expect("TX error on http headers");
+        check_tx(dest.send(PollnetMessage::Binary(headers.into())))?;
     };
     match resp.bytes().await {
         Ok(body) => {
             debug!("Body size: {:} bytes", body.len());
-            dest.send(PollnetMessage::Binary(body.to_vec()))
-                .expect("TX error on http body");
+            check_tx(dest.send(PollnetMessage::Binary(body.to_vec())))?;
         }
         Err(body_err) => {
-            dest.send(PollnetMessage::Error(body_err.to_string()))
-                .expect("TX error on http body error");
+            debug!("Error getting HTTP body.");
+            send_error(dest, body_err.to_string());
+            return Ok(());
         }
     };
     debug!("HTTP request complete, sending disconnect.");
-    dest.send(PollnetMessage::Disconnect)
-        .expect("TX error on disconnect");
+    send_disconnect(dest);
+    Ok(())
 }
 
 impl PollnetContext {
@@ -159,11 +163,9 @@ impl PollnetContext {
             let addr = bind_addr.parse();
             let addr = match addr {
                 Ok(v) => v,
-                Err(_) => {
+                Err(e) => {
                     error!("Invalid TCP address: {}", bind_addr);
-                    tx_from_sock
-                        .send(PollnetMessage::Error("Invalid TCP address".to_string()))
-                        .unwrap_or_default();
+                    send_error(tx_from_sock, format!("Invalid TCP address: {:?}", e));
                     return;
                 }
             };
@@ -184,15 +186,15 @@ impl PollnetContext {
                 }))
             });
 
-            let server = hyper::Server::try_bind(&addr);
-            if let Err(bind_err) = server {
-                error!("Couldn't bind {}: {}", bind_addr, bind_err);
-                tx_from_sock
-                    .send(PollnetMessage::Error(bind_err.to_string()))
-                    .unwrap_or_default();
-                return;
+            let server = match hyper::Server::try_bind(&addr) {
+                Err(bind_err) => {
+                    error!("Couldn't bind {}: {}", bind_addr, bind_err);
+                    send_error(tx_from_sock, bind_err.to_string());
+                    return;
+                }
+                Ok(server) => server,
             }
-            let server = server.unwrap().serve(make_service);
+            .serve(make_service);
             let graceful = server.with_graceful_shutdown(async move {
                 let virtual_files = virtual_files_two_the_clone_wars.clone();
                 loop {
@@ -202,6 +204,9 @@ impl PollnetContext {
                         | None => break,
                         Some(PollnetMessage::FileAdd(filename, filedata)) => {
                             debug!("Adding virtual file: {:}", filename);
+                            // I really do not see a reasonable scenario where
+                            // this lock could end up poisoned so I think it's
+                            // OK here to just panic.
                             let mut vfiles = virtual_files.write().expect("Lock is poisoned");
                             vfiles.insert(filename, filedata);
                         }
@@ -217,9 +222,7 @@ impl PollnetContext {
             });
             info!("HTTP server running on http://{}/", addr);
             if let Err(err) = graceful.await {
-                tx_from_sock
-                    .send(PollnetMessage::Error(err.to_string()))
-                    .unwrap_or_default(); // don't care at this point
+                send_error(tx_from_sock, err.to_string());
             }
             info!("HTTP server stopped.");
         });
@@ -251,7 +254,10 @@ impl PollnetContext {
                     // handle_get will send the disconnect message after completion
                     _ = &mut get_handler => break,
                     from_c_message = rx_to_sock.recv() => {
-                        if let Some(PollnetMessage::Disconnect) = from_c_message { break }
+                        match from_c_message {
+                            Some(PollnetMessage::Disconnect) | None => break,
+                            _ => ()
+                        }
                     },
                 }
             }
@@ -284,7 +290,10 @@ impl PollnetContext {
                 tokio::select! {
                     _ = &mut post_handler => break,
                     from_c_message = rx_to_sock.recv() => {
-                        if let Some(PollnetMessage::Disconnect) = from_c_message { break }
+                        match from_c_message {
+                            Some(PollnetMessage::Disconnect) | None => break,
+                            _ => ()
+                        }
                     },
                 }
             }
