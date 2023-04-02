@@ -15,14 +15,14 @@ async fn tcp_poll_loop(
                     Some(PollnetMessage::Text(msg)) => {
                         if let Err(e) = tcp_stream.write_all(msg.as_bytes()).await {
                             debug!("TCP send error.");
-                            send_error(tx_from_sock, e.to_string());
+                            send_error(tx_from_sock, e);
                             return Ok(());
                         }
                     },
                     Some(PollnetMessage::Binary(msg)) => {
                         if let Err(e) = tcp_stream.write_all(&msg).await {
                             debug!("TCP send error.");
-                            send_error(tx_from_sock, e.to_string());
+                            send_error(tx_from_sock, e);
                             return Ok(());
                         }
                     },
@@ -51,7 +51,7 @@ async fn tcp_poll_loop(
                         // no effect?
                     },
                     Err(err) => {
-                        send_error(tx_from_sock, err.to_string());
+                        send_error(tx_from_sock, err);
                         return Ok(())
                     },
                 }
@@ -100,7 +100,7 @@ impl PollnetContext {
             let listener = match TcpListener::bind(&addr).await {
                 Ok(listener) => listener,
                 Err(tcp_err) => {
-                    send_error(tx_from_sock, tcp_err.to_string());
+                    send_error(tx_from_sock, tcp_err);
                     return;
                 }
             };
@@ -162,7 +162,7 @@ impl PollnetContext {
                 }
                 Err(err) => {
                     error!("TCP client connection error: {}", err);
-                    send_error(tx_from_sock, err.to_string());
+                    send_error(tx_from_sock, err);
                 }
             }
         });

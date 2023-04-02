@@ -20,15 +20,11 @@ fn check_tx<T>(r: Result<(), std::sync::mpsc::SendError<T>>) -> anyhow::Result<(
     r.map_err(|_| anyhow!("Channel TX Error"))
 }
 
-// Just log if this is an error
-fn final_tx<T>(r: Result<(), std::sync::mpsc::SendError<T>>) {
-    if r.is_err() {
-        warn!("Internal TX error");
-    }
-}
-
-fn send_error(tx: std::sync::mpsc::Sender<PollnetMessage>, msg: String) {
-    if tx.send(PollnetMessage::Error(msg)).is_err() {
+fn send_error<T>(tx: std::sync::mpsc::Sender<PollnetMessage>, msg: T)
+where
+    T: ToString,
+{
+    if tx.send(PollnetMessage::Error(msg.to_string())).is_err() {
         warn!("TX error sending error.")
     }
 }

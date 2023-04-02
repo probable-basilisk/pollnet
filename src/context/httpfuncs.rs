@@ -126,7 +126,7 @@ async fn handle_http_response(
         Ok(resp) => resp,
         Err(err) => {
             info!("HTTP failed: {}", err);
-            send_error(dest, err.to_string());
+            send_error(dest, err);
             return Ok(());
         }
     };
@@ -143,7 +143,7 @@ async fn handle_http_response(
         }
         Err(body_err) => {
             debug!("Error getting HTTP body.");
-            send_error(dest, body_err.to_string());
+            send_error(dest, body_err);
             return Ok(());
         }
     };
@@ -189,7 +189,7 @@ impl PollnetContext {
             let server = match hyper::Server::try_bind(&addr) {
                 Err(bind_err) => {
                     error!("Couldn't bind {}: {}", bind_addr, bind_err);
-                    send_error(tx_from_sock, bind_err.to_string());
+                    send_error(tx_from_sock, bind_err);
                     return;
                 }
                 Ok(server) => server,
@@ -222,7 +222,7 @@ impl PollnetContext {
             });
             info!("HTTP server running on http://{}/", addr);
             if let Err(err) = graceful.await {
-                send_error(tx_from_sock, err.to_string());
+                send_error(tx_from_sock, err);
             }
             info!("HTTP server stopped.");
         });
