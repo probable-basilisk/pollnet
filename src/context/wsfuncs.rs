@@ -18,6 +18,7 @@ where
             from_c_message = io.rx.recv() => {
                 match from_c_message {
                     Some(PollnetMessage::Text(msg)) => {
+                        debug!("WS outgoing text: {:}", msg.len());
                         if let Err(e) = ws_stream.send(Message::Text(msg)).await {
                             debug!("WS send error.");
                             send_error(io.tx, e);
@@ -25,6 +26,7 @@ where
                         };
                     },
                     Some(PollnetMessage::Binary(msg)) => {
+                        debug!("WS outgoing binary: {:}", msg.len());
                         if let Err(e) = ws_stream.send(Message::Binary(msg)).await {
                             debug!("WS send error.");
                             send_error(io.tx, e);
@@ -47,7 +49,14 @@ where
             from_sock_message = ws_stream.next() => {
                 match from_sock_message {
                     Some(Ok(msg)) => {
-                        check_tx(io.tx.send(PollnetMessage::Binary(msg.into_data())))?;
+                        if msg.is_text() || msg.is_binary() {
+                            debug!("WS incoming msg: {:}", msg.len());
+                            check_tx(io.tx.send(PollnetMessage::Binary(msg.into_data())))?;
+                        } else if msg.is_close() {
+                            debug!("Received close!");
+                            send_disconnect(io.tx);
+                            return Ok(());
+                        }
                     },
                     Some(Err(msg)) => {
                         info!("WS error.");
