@@ -81,15 +81,18 @@ add_thread("ws_server", function()
   pollsock("WS_SERVER", ws_server_sock)
 end)
 
-if jit.os:lower() == "windows" then
-  -- On Windows, binding 0.0.0.0 doesn't automatically bind
-  -- IPV6 localhost, so we manually spin up a second server
-  add_thread("ws_server_ipv6", function()
-    local ws_server_sock = pollnet.listen_ws("[::]:9090")
-    ws_server_sock:on_connection(client_handler("WS_IPV6"))
-    pollsock("WS_SERVER_IPV6", ws_server_sock)
-  end)
-end
+add_thread("ws_server_ipv6", function()
+  local port = 9696
+  if jit.os:lower() == "windows" then
+    -- windows will let us bind the same port in both
+    -- ipv4 and ipv6; Linux does not
+    port = 9090
+  end
+
+  local ws_server_sock = pollnet.listen_ws("[::]:" .. port)
+  ws_server_sock:on_connection(client_handler("WS_IPV6"))
+  pollsock("WS_SERVER_IPV6", ws_server_sock)
+end)
 
 add_thread("tcp_server", function()
   local tcp_server_sock = pollnet.listen_tcp("0.0.0.0:6000")

@@ -78,7 +78,13 @@ local function test_local_ws()
   expect(res[1], "ECHO:HELLO", "WS round trip")
 
   -- test IPV6 websocket
-  local sock = pollnet.open_ws("ws://[::1]:9090")
+  -- in windows we can bind the same port for both v4 and v6,
+  -- so test that that works
+  local v6port = 9696
+  if jit.os:lower() == "windows" then
+    v6port = 9090
+  end
+  local sock = pollnet.open_ws("ws://[::1]:" .. v6port)
   sync_sleep(OPEN_DELAY_MS)
   sock:send("HELLO")
   local res = sync_get_messages(sock, 1)
