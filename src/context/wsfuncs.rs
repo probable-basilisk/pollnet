@@ -82,7 +82,8 @@ where
         error!("Unexpected WS loop termination: {:?}", e);
     }
     info!("Closing websocket!");
-    // At this point errors don't matter
+    // The stream might already be closed at this point but
+    // tungstenite just logs a debug message so not a big deal
     ws_stream.close(None).await.unwrap_or_default();
 }
 

@@ -50,19 +50,34 @@ local function echo_handler(name, sock, msg)
   sock:send("ECHO:" .. msg)
 end
 
-local function client_handler(prefix)
+local function countdown_handler(name, sock, msg)
+  print("Msg from", name, msg)
+  local count = tonumber(msg)
+  if not count then
+    sock:send("ECHO:" .. msg)
+    return
+  end
+  for idx = 1, count do
+    sock:send("COUNT: " .. idx)
+    coroutine.yield()
+  end
+  sock:close()
+end
+
+local function client_handler(prefix, inner_handler)
+  inner_handler = inner_handler or echo_handler
   return function (sock, addr)
     local name = ("%s:%s"):format(prefix, addr)
     print("Got client?", name)
     add_thread(name, function()
-      pollsock(name, sock, echo_handler)
+      pollsock(name, sock, inner_handler)
     end)
   end
 end
 
 add_thread("ws_server", function()
   local ws_server_sock = pollnet.listen_ws("0.0.0.0:9090")
-  ws_server_sock:on_connection(client_handler("WS"))
+  ws_server_sock:on_connection(client_handler("WS", countdown_handler))
   pollsock("WS_SERVER", ws_server_sock)
 end)
 

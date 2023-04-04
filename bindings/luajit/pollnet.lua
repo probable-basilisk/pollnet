@@ -230,13 +230,13 @@ function socket_mt:_get_message()
 end
 
 function socket_mt:poll()
+  self._last_message = nil
   if not self._socket then 
     self._status = "invalid"
     return false, "invalid"
   end
   local res = POLLNET_RESULT_CODES[pollnet.pollnet_update(_ctx, self._socket)] or "error"
   self._status = res
-  self._last_message = nil
   if res == "hasdata" then
     self._status = "open"
     self._last_message = self:_get_message()
@@ -253,6 +253,7 @@ function socket_mt:poll()
     return false, self._last_message
   elseif res == "closed" then
     self._status = "closed"
+    self._last_message = "closed"
     return false, "closed"
   elseif res == "newclient" then
     self._status = "open"
@@ -282,11 +283,12 @@ end
 
 function socket_mt:send(msg)
   assert(self._socket)
+  assert(type(msg) == 'string', "Argument to send must be a string")
   pollnet.pollnet_send(_ctx, self._socket, msg)
 end
 
 function socket_mt:close()
-  assert(self._socket)
+  if not self._socket then return end
   pollnet.pollnet_close(_ctx, self._socket)
   self._socket = nil
 end
