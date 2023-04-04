@@ -149,10 +149,10 @@ end
 sync_sleep(STARTUP_DELAY_MS)
 
 test_local_ws()
--- test_local_tcp()
--- test_local_http()
--- test_https()
--- test_wss()
+test_local_tcp()
+test_local_http()
+test_https()
+test_wss()
 
 print("--------- Test Results ---------")
 print("Succeeded:", test_successes)
