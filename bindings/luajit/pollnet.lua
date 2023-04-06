@@ -72,7 +72,6 @@ do
   end
 end
 
-
 local POLLNET_RESULT_CODES = {
   [0] = "invalid_handle",
   [1] = "error",
