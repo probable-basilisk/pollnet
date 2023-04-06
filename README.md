@@ -8,19 +8,17 @@ within game-embedded LuaJIT environments (e.g., mods)
 * bare-bones HTTP client: simple GET/POST
 * bare-bones HTTP server: serve static files from disk or from memory
 
-# Usage (luajit bindings)
+# Usage (luajit FFI bindings)
 ```Lua
 -- pollnet.lua FFI loads pollnet.dll
 local pollnet = require("pollnet") 
 
 local sock = pollnet.open_ws("wss://irc-ws.chat.twitch.tv:443")
 -- special nick for anon read-only access on twitch
-sock:send("PASS doesntmatter")
 sock:send("NICK justinfan" .. math.random(1, 100000))
 sock:send("JOIN #some_twitch_channel")
 
--- assuming that somehow you can run a callback on each frame,
--- or on some reasonable timer
+-- assuming that you can run a callback each frame or on a timer
 each_game_tick(function()
   if not sock then return end
   local happy, msg = sock:poll()
@@ -29,10 +27,9 @@ each_game_tick(function()
     sock = nil
     return
   end
-  if msg then
-    if msg == "PING :tmi.twitch.tv" then
-      sock:send("PONG :tmi.twitch.tv")
-    end
+  if msg == "PING :tmi.twitch.tv" then
+    sock:send("PONG :tmi.twitch.tv")
+  elseif msg then
     print("CHAT: " .. msg) 
   end
 end)
@@ -55,19 +52,6 @@ each_game_tick(function()
     print(part_order[#parts], parts[#parts])
   end
 end)
-
--- You can optionally ask for only the body (second argument = true)
-local req_sock = pollnet.http_get("https://www.example.com", true)
-each_game_tick(function()
-  if not req_sock then return end
-  local happy, msg = req_sock:poll()
-  if not happy then
-    error("Socket error:", req_sock:last_message())
-  elseif msg then 
-    print("Body:", msg) 
-    error("Socket done.")
-  end
-end)
 ```
 
 # FAQ
@@ -80,10 +64,10 @@ program flow, but only get to run some Lua every frame or simulation 'tick'.
 
 ## What makes this useful for mods?
 
+- nonblocking and callback free
 - simple to build, complete with TLS/WSS support, even on Windows
 - broad compatibility with LuaJIT binaries: no worrying about which compiler LuaJIT was built with
-- compact C API (<20 functions) using only basic types
-- speaks websockets and secure websockets out-of-the-box
+- straightforward C API for easy use from FFIs
 
 ## Can this be used outside of LuaJIT?
 

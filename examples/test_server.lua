@@ -88,7 +88,6 @@ add_thread("ws_server_ipv6", function()
     -- ipv4 and ipv6; Linux does not
     port = 9090
   end
-
   local ws_server_sock = pollnet.listen_ws("[::]:" .. port)
   ws_server_sock:on_connection(client_handler("WS_IPV6"))
   pollsock("WS_SERVER_IPV6", ws_server_sock)

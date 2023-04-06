@@ -7,29 +7,32 @@ end
 local target_channel = arg[1]
 local url = "wss://irc-ws.chat.twitch.tv:443"
 
-local sock = pollnet.open_ws(url)
--- Waiting for open isn't strictly necessary
-while sock:status() ~= "open" and sock:poll() do
-  print("Connecting...")
-  pollnet.sleep_ms(200)
-end
-print("Connected!")
+local thread = coroutine.create(function()
+  local sock = pollnet.open_ws(url)
+  -- Note: connecting is asynchronous, so the
+  -- socket isn't yet open! But we can queue up sends anyway.
 
-sock:send("PASS doesntmatter")
--- special nick for anon read-only access on twitch
-local anon_user_name = "justinfan" .. math.random(1, 100000)
-sock:send("NICK " .. anon_user_name)
-sock:send("JOIN #" .. target_channel)
+  -- special nick for anon read-only access on twitch
+  local anon_user_name = "justinfan" .. math.random(1, 100000)
+  sock:send("NICK " .. anon_user_name)
+  sock:send("JOIN #" .. target_channel)
 
-while sock:poll() do
-  local msg = sock:last_message()
-  if msg then
-    if msg == "PING :tmi.twitch.tv" then
+  while true do
+    local happy, msg = sock:poll()
+    if not happy then break end
+    if msg and msg == "PING :tmi.twitch.tv" then
       sock:send("PONG :tmi.twitch.tv")
+    elseif msg then
+      print(msg)
     end
-    print(msg)
-  else
-    pollnet.sleep_ms(20)
+    coroutine.yield()
   end
+  print("Socket closed: ", sock:last_message())
+end)
+
+-- In a typical application-embedded Lua context the application would
+-- have its own 'main loop', which we emulate here
+while coroutine.status(thread) ~= "dead" do
+  coroutine.resume(thread)
+  pollnet.sleep_ms(20) -- Blocking!
 end
-print("Socket closed: ", sock:last_message())
