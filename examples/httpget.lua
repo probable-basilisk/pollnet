@@ -18,7 +18,9 @@ local function poll_blocking(sock)
 end
 
 print("GET", url)
-local sock = pollnet.http_get(url, false)
+local sock = pollnet.http_get(url, {
+  ["User-Agent"] = "pollnet/" .. pollnet.VERSION
+})
 local status = poll_blocking(sock)
 print("HTTP Status:", status)
 local headers = poll_blocking(sock)
