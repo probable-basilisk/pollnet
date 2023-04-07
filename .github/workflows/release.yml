@@ -48,7 +48,7 @@ jobs:
         run: |
           mkdir lib
           cp target/release/libpollnet.so lib/
-          zip -r "pollnet_${{ matrix.os }}.zip" lib bindings LICENSE README.md
+          zip -r "pollnet_${{ matrix.os }}.zip" lib bindings examples LICENSE README.md
           
       - name: Zip (windows)
         if: matrix.os == 'windows-latest'
@@ -59,7 +59,7 @@ jobs:
           cp target/release/pollnet.dll.lib lib/
           cp target/i686-pc-windows-msvc/release/pollnet.dll lib32/
           cp target/i686-pc-windows-msvc/release/pollnet.dll.lib lib32/
-          7z a "pollnet_${{ matrix.os }}.zip" lib lib32 bindings LICENSE README.md
+          7z a "pollnet_${{ matrix.os }}.zip" lib lib32 bindings examples LICENSE README.md
           
       - name: Publish Release
         uses: ncipollo/release-action@v1
