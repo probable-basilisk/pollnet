@@ -108,7 +108,7 @@ local function validate_status_transitions(statuses, testname)
   for idx = 2, #statuses do
     local a = statuses[idx-1]
     local b = statuses[idx]
-    if ALLOWED[tr(a, b)] or ALLOWED[tr(a, "*")] or ALLOWED[tr("*", b)] then
+    if a == b or ALLOWED[tr(a, b)] or ALLOWED[tr(a, "*")] or ALLOWED[tr("*", b)] then
       -- transition was OK
     else
       ok(false, testname, "invalid transition: " .. tr(a, b))

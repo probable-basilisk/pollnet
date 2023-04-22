@@ -260,7 +260,10 @@ impl PollnetContext {
         };
 
         match result {
-            Ok(PollnetMessage::Connect) => SocketStatus::OpenNoData,
+            Ok(PollnetMessage::Connect) => {
+                sock.status = SocketStatus::OpenNoData;
+                sock.status
+            }
             Ok(PollnetMessage::Disconnect) | Err(RecvError::Disconnected) => {
                 debug!("Socket disconnected.");
                 sock.io.take();
