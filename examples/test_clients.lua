@@ -97,6 +97,41 @@ local function test_local_ws()
   expect(#res, 13, "WS correct message count")
 end
 
+local function validate_status_transitions(statuses, testname)
+  local ALLOWED = {
+    ["unpolled->*"] = true,
+    ["*->error"] = true,
+    ["opening->open"] = true,
+    ["open->closed"] = true,
+  }
+  local function tr(a, b) return a .. "->" .. b end
+  for idx = 2, #statuses do
+    local a = statuses[idx-1]
+    local b = statuses[idx]
+    if ALLOWED[tr(a, b)] or ALLOWED[tr(a, "*")] or ALLOWED[tr("*", b)] then
+      -- transition was OK
+    else
+      ok(false, testname, "invalid transition: " .. tr(a, b))
+      return false
+    end
+  end
+  ok(true, testname)
+end
+
+local function test_ws_status_flow()
+  local sock = pollnet.open_ws("ws://127.0.0.1:9090")
+  sock:send("HELLO")
+  local statuses = {}
+  for iter = 1, 10 do
+    local happy = sock:poll()
+    table.insert(statuses, sock:status())
+    if not happy then break end
+    sync_sleep(16)
+  end
+  sock:close()
+  validate_status_transitions(statuses, "WS status flow")
+end
+
 local function test_local_tcp()
   local sock = pollnet.open_tcp("127.0.0.1:6000")
   sync_sleep(OPEN_DELAY_MS)
@@ -155,6 +190,7 @@ end
 sync_sleep(STARTUP_DELAY_MS)
 
 test_local_ws()
+test_ws_status_flow()
 test_local_tcp()
 test_local_http()
 test_https()
