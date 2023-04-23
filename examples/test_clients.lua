@@ -6,38 +6,6 @@ local STARTUP_DELAY_MS = 500
 local OPEN_DELAY_MS = 0
 local TIMEOUT = 2000
 
-local function sync_get_messages(sock, count, timeout)
-  count = count or 1
-  timeout = timeout or TIMEOUT
-  local msgs = {}
-  while sock:poll() do
-    if sock:last_message() then
-      table.insert(msgs, sock:last_message())
-      if #msgs == count then
-        sock:close()
-        return msgs, true
-      end
-    end
-    if timeout <= 0 then
-      print("Socket timed out.")
-      sock:close()
-      return msgs, false, "timeout"
-    end
-    timeout = timeout - DELAY_MS
-    pollnet.sleep_ms(DELAY_MS)
-  end
-  local errmsg = sock:last_message()
-  print("Socket closed", errmsg)
-  sock:close()
-  return msgs, false, errmsg
-end
-
-local function sync_sleep(ms)
-  if ms > 0 then
-    pollnet.sleep_ms(ms)
-  end
-end
-
 local test_successes = 0
 local test_failures = 0
 
@@ -68,6 +36,38 @@ local function expect_match(val, patt, msg)
   ok(val and val:match(patt), msg, 
     ("[%s] does not match pattern [%s]"):format(tostring(val), patt)
   )
+end
+
+local function sync_sleep(ms)
+  if ms > 0 then
+    pollnet.sleep_ms(ms)
+  end
+end
+
+local function sync_get_messages(sock, count, timeout)
+  count = count or 1
+  timeout = timeout or TIMEOUT
+  local msgs = {}
+  while sock:poll() do
+    if sock:last_message() then
+      table.insert(msgs, sock:last_message())
+      if #msgs == count then
+        sock:close()
+        return msgs, true
+      end
+    end
+    if timeout <= 0 then
+      print("Socket timed out.")
+      sock:close()
+      return msgs, false, "timeout"
+    end
+    timeout = timeout - DELAY_MS
+    pollnet.sleep_ms(DELAY_MS)
+  end
+  local errmsg = sock:last_message()
+  print("Socket closed", errmsg)
+  sock:close()
+  return msgs, false, errmsg
 end
 
 local function test_local_ws()
@@ -174,12 +174,44 @@ local function test_https()
   expect_size(res[3], 500, "HTTPS GET body has content")
 end
 
+local function poll_until_open(sock)
+  while true do
+    sock:poll()
+    local status = sock:status()
+    if status == "open" then 
+      return true 
+    elseif status == "error" or status == "closed" then
+      return false
+    end
+    sync_sleep(50)
+  end
+end
+
+local function connect_ws_with_retries(url, max_retries, retry_delay)
+  max_retries = max_retries or 5
+  retry_delay = retry_delay or 1000
+  for idx = 1, max_retries do
+    local sock = pollnet.open_ws(url)
+    if poll_until_open(sock) then
+      return sock
+    else
+      print("Failed connection attempt " .. idx)
+      sock:close()
+      sync_sleep(retry_delay)
+    end
+  end
+  return nil
+end
+
 local function test_wss()
   -- since echo.websocket.org is gone, twitch is about the most
   -- convenient secure websocket host to test against
   -- special nick for anon read-only access on twitch
   local anon_user_name = "justinfan" .. math.random(1, 100000)
-  local sock = pollnet.open_ws("wss://irc-ws.chat.twitch.tv:443")
+  local sock = connect_ws_with_retries("wss://irc-ws.chat.twitch.tv:443")
+  if not sock then
+    ok(false, "WSS got something back", "Connection failure")
+  end
   --sock:send("PASS doesntmatter")
   sock:send("NICK " .. anon_user_name)
   local res = sync_get_messages(sock, 1)
