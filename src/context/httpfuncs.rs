@@ -7,7 +7,7 @@ use hyper_util::rt::TokioIo;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener; // for read_to_end()
+use tokio::net::TcpListener; // read_to_end()
 
 use std::collections::HashMap;
 use std::io::Error as IoError;
@@ -23,11 +23,11 @@ type ReplyBody = Full<Bytes>;
 type ReqResult = Result<Response<ReplyBody>, IoError>;
 
 fn build_and_validate_path(base_path: &Path, requested_path: &str) -> Option<PathBuf> {
-    let path = requested_path.trim_start_matches('/');
-    let path_decoded = Path::new(&*path);
+    // Largely taken from tower-http (MIT license): https://github.com/tower-rs/tower-http
+    let path = Path::new(requested_path.trim_start_matches('/'));
 
     let mut full_path = base_path.to_path_buf();
-    for component in path_decoded.components() {
+    for component in path.components() {
         match component {
             Component::Normal(comp) => {
                 // protect against paths like `/foo/c:/bar/baz` (#204)
@@ -48,7 +48,6 @@ fn build_and_validate_path(base_path: &Path, requested_path: &str) -> Option<Pat
 }
 
 async fn simple_file_send(basedir: &str, path: &str) -> ReqResult {
-    // Open file for reading
     let base = Path::new(basedir);
     let realpath = match build_and_validate_path(base, path) {
         Some(path) => path,
@@ -227,16 +226,14 @@ async fn accept_http_tcp(
     virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 ) {
     let io = TokioIo::new(stream);
-    // Finally, we bind the incoming connection to our `hello` service
     if let Err(err) = http1::Builder::new()
-        // `service_fn` converts our function in a `Service`
         .serve_connection(
             io,
             service_fn(|req| handle_http_request(req, static_dir.clone(), virtual_files.clone())),
         )
         .await
     {
-        println!("Error serving connection: {:?}", err);
+        error!("Error serving connection: {:?}", err);
     }
 }
 
@@ -301,9 +298,6 @@ impl PollnetContext {
                     },
                 };
             };
-            // if let Err(err) = graceful.await {
-            //     send_error(reactor_io.tx, err);
-            // }
             info!("HTTP server stopped.");
         });
 
