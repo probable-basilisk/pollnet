@@ -61,14 +61,14 @@ async fn simple_file_send(basedir: &str, path: &str) -> ReqResult {
     let mut file = match File::open(realpath.as_path()).await {
         Ok(file) => file,
         Err(e) => {
-            error!("ERROR: Unable to open file: {:}", e);
+            info!("404 for '{:}': {:}", realpath.display(), e);
             return not_found(path);
         }
     };
 
     let mut contents = vec![];
     if let Err(e) = file.read_to_end(&mut contents).await {
-        error!("ERROR: Read issue: {:}", e);
+        error!("ERROR: Read issue on '{:}': {:}", realpath.display(), e);
         return not_found(path);
     };
 
