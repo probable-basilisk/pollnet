@@ -1,13 +1,13 @@
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
-use hyper::server::conn::http1;
 use http_body_util::Full;
 use hyper::body::Bytes;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpListener;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::fs::File;
-use tokio::io::AsyncReadExt; // for read_to_end()
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener; // for read_to_end()
 
 use std::collections::HashMap;
 use std::io::Error as IoError;
@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use std::path::{PathBuf, Component};
+use std::path::{Component, PathBuf};
 
 use super::*;
 
@@ -75,11 +75,11 @@ async fn simple_file_send(basedir: &str, path: &str) -> ReqResult {
     Ok(Response::new(Full::new(contents.into())))
 }
 
-fn not_found(path: &str) -> ReqResult {
+fn not_found(_path: &str) -> ReqResult {
     Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Full::new(Bytes::new()))
-            .map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain"))
+        .status(StatusCode::NOT_FOUND)
+        .body(Full::new(Bytes::new()))
+        .map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain"))
 }
 
 async fn handle_http_request<B>(
@@ -93,13 +93,13 @@ async fn handle_http_request<B>(
         // Do we need like... more headers???
         let vfiles = virtual_files.read().expect("RwLock poisoned");
         if let Some(file_data) = vfiles.get(req.uri().path()) {
-            return Ok(Response::new(Full::new(file_data.clone().into())))
+            return Ok(Response::new(Full::new(file_data.clone().into())));
         }
     }
 
     match static_dir {
         Some(dir) => simple_file_send(&dir, path).await,
-        None => not_found(path)
+        None => not_found(path),
     }
 }
 
@@ -219,6 +219,27 @@ async fn handle_http_response(
     Ok(())
 }
 
+async fn accept_http_tcp(
+    stream: TcpStream,
+    _addr: SocketAddr,
+    _outer_tx: std::sync::mpsc::Sender<PollnetMessage>,
+    static_dir: Option<String>,
+    virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+) {
+    let io = TokioIo::new(stream);
+    // Finally, we bind the incoming connection to our `hello` service
+    if let Err(err) = http1::Builder::new()
+        // `service_fn` converts our function in a `Service`
+        .serve_connection(
+            io,
+            service_fn(|req| handle_http_request(req, static_dir.clone(), virtual_files.clone())),
+        )
+        .await
+    {
+        println!("Error serving connection: {:?}", err);
+    }
+}
+
 impl PollnetContext {
     pub fn serve_http(&mut self, addr: String, serve_dir: Option<String>) -> SocketHandle {
         let (host_io, mut reactor_io) = create_channels();
@@ -241,32 +262,45 @@ impl PollnetContext {
 
             // We start a loop to continuously accept incoming connections
             loop {
-                let (stream, _) = match listener.accept().await {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        send_error(reactor_io.tx, e);
-                        break;
-                    }
+                tokio::select! {
+                    from_c_message = reactor_io.rx.recv() => {
+                        match from_c_message {
+                            Some(PollnetMessage::Disconnect)
+                            | Some(PollnetMessage::Error(_))
+                            | None => break,
+                            Some(PollnetMessage::FileAdd(filename, filedata)) => {
+                                debug!("Adding virtual file: {:}", filename);
+                                // I really do not see a reasonable scenario where
+                                // this lock could end up poisoned so I think it's
+                                // OK here to just panic.
+                                let mut vfiles = virtual_files.write().expect("Lock is poisoned");
+                                vfiles.insert(filename, filedata);
+                            }
+                            Some(PollnetMessage::FileRemove(filename)) => {
+                                debug!("Removing virtual file: {:}", filename);
+                                let mut vfiles = virtual_files.write().expect("Lock is poisoned");
+                                vfiles.remove(&filename);
+                            }
+                            _ => {} // ignore sends?
+                        }
+                    },
+                    new_client = listener.accept() => {
+                        match new_client {
+                            Err(e) => {
+                                error!("Client failed to connect: {:?}", e);
+                            },
+                            Ok((stream, addr)) => {
+                                tokio::spawn(
+                                    accept_http_tcp(
+                                        stream, addr, reactor_io.tx.clone(),
+                                        serve_dir2.clone(), virtual_files.clone()
+                                    )
+                                );
+                            }
+                        }
+                    },
                 };
-        
-                let io = TokioIo::new(stream);
-                let ehh = serve_dir2.clone();
-                let ehh2 = virtual_files.clone();
-        
-                // Spawn a tokio task to serve multiple connections concurrently
-                tokio::task::spawn(async move {
-                    // Finally, we bind the incoming connection to our `hello` service
-                    if let Err(err) = http1::Builder::new()
-                        // `service_fn` converts our function in a `Service`
-                        .serve_connection(io, service_fn(move |req| {
-                            handle_http_request(req, ehh.clone(), ehh2.clone())
-                        }))
-                        .await
-                    {
-                        println!("Error serving connection: {:?}", err);
-                    }
-                });
-            }
+            };
             // if let Err(err) = graceful.await {
             //     send_error(reactor_io.tx, err);
             // }

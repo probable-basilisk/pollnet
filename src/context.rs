@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use futures::executor::block_on;
-use futures_util::{future, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use slotmap::{HopSlotMap, Key};
 use std::net::SocketAddr;
