@@ -1,38 +1,104 @@
-use http::{HeaderMap, HeaderName, HeaderValue};
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response};
-use hyper_staticfile::Static;
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener; // read_to_end()
+
 use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use std::path::{Component, PathBuf};
+
 use super::*;
+
+type ReplyBody = Full<Bytes>;
+type ReqResult = Result<Response<ReplyBody>, IoError>;
+
+fn build_and_validate_path(base_path: &Path, requested_path: &str) -> Option<PathBuf> {
+    // Largely taken from tower-http (MIT license): https://github.com/tower-rs/tower-http
+    let path = Path::new(requested_path.trim_start_matches('/'));
+
+    let mut full_path = base_path.to_path_buf();
+    for component in path.components() {
+        match component {
+            Component::Normal(comp) => {
+                // protect against paths like `/foo/c:/bar/baz` (#204)
+                if Path::new(&comp)
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_)))
+                {
+                    full_path.push(comp)
+                } else {
+                    return None;
+                }
+            }
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => return None,
+        }
+    }
+    Some(full_path)
+}
+
+async fn simple_file_send(basedir: &str, path: &str) -> ReqResult {
+    let base = Path::new(basedir);
+    let realpath = match build_and_validate_path(base, path) {
+        Some(path) => path,
+        None => {
+            error!("ERROR: Malformed path: {:}", path);
+            return not_found(path);
+        }
+    };
+
+    let mut file = match File::open(realpath.as_path()).await {
+        Ok(file) => file,
+        Err(e) => {
+            info!("404 for '{:}': {:}", realpath.display(), e);
+            return not_found(path);
+        }
+    };
+
+    let mut contents = vec![];
+    if let Err(e) = file.read_to_end(&mut contents).await {
+        error!("ERROR: Read issue on '{:}': {:}", realpath.display(), e);
+        return not_found(path);
+    };
+
+    Ok(Response::new(Full::new(contents.into())))
+}
+
+fn not_found(_path: &str) -> ReqResult {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Full::new(Bytes::new()))
+        .map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain"))
+}
 
 async fn handle_http_request<B>(
     req: Request<B>,
-    static_: Option<Static>,
+    static_dir: Option<String>,
     virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
-) -> Result<Response<Body>, IoError> {
-    debug!("HTTP req: {:}", req.uri().path());
+) -> ReqResult {
+    let path = req.uri().path();
+    debug!("HTTP req: {:}", path);
     {
         // Do we need like... more headers???
         let vfiles = virtual_files.read().expect("RwLock poisoned");
         if let Some(file_data) = vfiles.get(req.uri().path()) {
-            return Response::builder()
-                .status(http::StatusCode::OK)
-                .body(Body::from(file_data.clone()))
-                .map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain"));
+            return Ok(Response::new(Full::new(file_data.clone().into())));
         }
     }
 
-    match static_ {
-        Some(static_) => static_.clone().serve(req).await,
-        None => Response::builder()
-            .status(http::StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain")),
+    match static_dir {
+        Some(dir) => simple_file_send(&dir, path).await,
+        None => not_found(path),
     }
 }
 
@@ -152,77 +218,86 @@ async fn handle_http_response(
     Ok(())
 }
 
+async fn accept_http_tcp(
+    stream: TcpStream,
+    _addr: SocketAddr,
+    _outer_tx: std::sync::mpsc::Sender<PollnetMessage>,
+    static_dir: Option<String>,
+    virtual_files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+) {
+    let io = TokioIo::new(stream);
+    if let Err(err) = http1::Builder::new()
+        .serve_connection(
+            io,
+            service_fn(|req| handle_http_request(req, static_dir.clone(), virtual_files.clone())),
+        )
+        .await
+    {
+        error!("Error serving connection: {:?}", err);
+    }
+}
+
 impl PollnetContext {
-    pub fn serve_http(&mut self, bind_addr: String, serve_dir: Option<String>) -> SocketHandle {
+    pub fn serve_http(&mut self, addr: String, serve_dir: Option<String>) -> SocketHandle {
         let (host_io, mut reactor_io) = create_channels();
 
         // Spawn a future onto the runtime
         self.rt_handle.spawn(async move {
-            info!("HTTP server spawned");
-            let addr = bind_addr.parse();
-            let addr = match addr {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Invalid TCP address: {}", bind_addr);
-                    send_error(reactor_io.tx, format!("Invalid TCP address: {:?}", e));
+            let listener = match TcpListener::bind(&addr).await {
+                Ok(listener) => listener,
+                Err(tcp_err) => {
+                    send_error(reactor_io.tx, tcp_err);
                     return;
                 }
             };
 
-            let static_ = serve_dir.map(|path_string| Static::new(Path::new(&path_string)));
-
             let virtual_files: HashMap<String, Vec<u8>> = HashMap::new();
             let virtual_files = Arc::new(RwLock::new(virtual_files));
-            let virtual_files_two_the_clone_wars = virtual_files.clone();
+            let serve_dir2 = serve_dir.clone();
 
-            let make_service = make_service_fn(|_| {
-                // Rust demands all these clones for reasons I don't fully understand
-                // I definitely feel so much safer though!
-                let static_ = static_.clone();
-                let virtual_files = virtual_files.clone();
-                future::ok::<_, hyper::Error>(service_fn(move |req| {
-                    handle_http_request(req, static_.clone(), virtual_files.clone())
-                }))
-            });
-
-            let server = match hyper::Server::try_bind(&addr) {
-                Err(bind_err) => {
-                    error!("Couldn't bind {}: {}", bind_addr, bind_err);
-                    send_error(reactor_io.tx, bind_err);
-                    return;
-                }
-                Ok(server) => server,
-            }
-            .serve(make_service);
-            let graceful = server.with_graceful_shutdown(async move {
-                let virtual_files = virtual_files_two_the_clone_wars.clone();
-                loop {
-                    match reactor_io.rx.recv().await {
-                        Some(PollnetMessage::Disconnect)
-                        | Some(PollnetMessage::Error(_))
-                        | None => break,
-                        Some(PollnetMessage::FileAdd(filename, filedata)) => {
-                            debug!("Adding virtual file: {:}", filename);
-                            // I really do not see a reasonable scenario where
-                            // this lock could end up poisoned so I think it's
-                            // OK here to just panic.
-                            let mut vfiles = virtual_files.write().expect("Lock is poisoned");
-                            vfiles.insert(filename, filedata);
-                        }
-                        Some(PollnetMessage::FileRemove(filename)) => {
-                            debug!("Removing virtual file: {:}", filename);
-                            let mut vfiles = virtual_files.write().expect("Lock is poisoned");
-                            vfiles.remove(&filename);
-                        }
-                        _ => {} // ignore sends?
-                    }
-                }
-                info!("HTTP server trying to gracefully exit?");
-            });
             info!("HTTP server running on http://{}/", addr);
-            if let Err(err) = graceful.await {
-                send_error(reactor_io.tx, err);
-            }
+
+            // We start a loop to continuously accept incoming connections
+            loop {
+                tokio::select! {
+                    from_c_message = reactor_io.rx.recv() => {
+                        match from_c_message {
+                            Some(PollnetMessage::Disconnect)
+                            | Some(PollnetMessage::Error(_))
+                            | None => break,
+                            Some(PollnetMessage::FileAdd(filename, filedata)) => {
+                                debug!("Adding virtual file: {:}", filename);
+                                // I really do not see a reasonable scenario where
+                                // this lock could end up poisoned so I think it's
+                                // OK here to just panic.
+                                let mut vfiles = virtual_files.write().expect("Lock is poisoned");
+                                vfiles.insert(filename, filedata);
+                            }
+                            Some(PollnetMessage::FileRemove(filename)) => {
+                                debug!("Removing virtual file: {:}", filename);
+                                let mut vfiles = virtual_files.write().expect("Lock is poisoned");
+                                vfiles.remove(&filename);
+                            }
+                            _ => {} // ignore sends?
+                        }
+                    },
+                    new_client = listener.accept() => {
+                        match new_client {
+                            Err(e) => {
+                                error!("Client failed to connect: {:?}", e);
+                            },
+                            Ok((stream, addr)) => {
+                                tokio::spawn(
+                                    accept_http_tcp(
+                                        stream, addr, reactor_io.tx.clone(),
+                                        serve_dir2.clone(), virtual_files.clone()
+                                    )
+                                );
+                            }
+                        }
+                    },
+                };
+            };
             info!("HTTP server stopped.");
         });
 

@@ -146,6 +146,15 @@ local function test_local_http()
   expect_match(res[1], "^200", "HTTP GET status 200")
   expect(res[3], "TEST1234", "HTTP GET body")
 
+  local sock = pollnet.http_get("http://127.0.0.1:8080/foo/bar/../../testfile.txt")
+  local res = sync_get_messages(sock, 3) -- status, headers, body
+  expect_match(res[1], "^200", "HTTP GET .. traversal status 200")
+  expect(res[3], "TEST1234", "HTTP GET .. traversal body")
+
+  local sock = pollnet.http_get("http://127.0.0.1:8080/../test_clients.lua")
+  local res = sync_get_messages(sock, 3) -- status, headers, body
+  expect_match(res[1], "^404", "HTTP GET path traversal attack fails (404)")
+
   local sock = pollnet.http_get("http://127.0.0.1:8080/idontexist.txt")
   local res = sync_get_messages(sock, 3) -- status, headers, body
   expect_match(res[1], "^404", "HTTP GET status 404")

@@ -11,8 +11,9 @@ slotmap = "1.0"
 futures = "*"
 url = "*"
 futures-util = "*"
-hyper = {version = "*", features = ["server"]}
-hyper-staticfile = "*"
+hyper = {version = "^1.1.0", features = ["server"]}
+hyper-util = {version = "0.1.2", features = ["full"]}
+http-body-util = "0.1"
 http = "*"
 nanoid = "*"
 reqwest = "*"
@@ -21,7 +22,7 @@ anyhow = "^1.0.70"
 
 [dependencies.tokio]
 version = "*"
-features = ["sync", "macros", "net"]
+features = ["sync", "macros", "net", "fs"]
 
 [dependencies.env_logger]
 version = "^0.10.0"
