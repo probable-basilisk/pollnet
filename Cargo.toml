@@ -1,12 +1,12 @@
 [package]
 name = "pollnet"
-version = "1.0.3"
+version = "1.0.4"
 authors = ["probable-basilisk <basilisk@mtknn.com>"]
 edition = "2021"
 
 [dependencies]
-tokio-tungstenite = {version = "^0.18.0", features = ["native-tls"]}
-tungstenite = {version = "^0.18.0", features = ["native-tls"]}
+tokio-tungstenite = {version = "^0.20.1", features = ["native-tls"]}
+tungstenite = {version = "^0.20.1", features = ["native-tls"]}
 slotmap = "1.0"
 futures = "*"
 url = "*"
