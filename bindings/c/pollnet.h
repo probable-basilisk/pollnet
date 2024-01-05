@@ -217,6 +217,23 @@ sockethandle_t pollnet_serve_static_http(pollnet_ctx* ctx, const char* addr, con
 sockethandle_t pollnet_serve_http(pollnet_ctx* ctx, const char* addr);
 
 /*
+ * Open a dynamic HTTP server on the given TCP address and port. The server
+ * acts like a TCP/WS server in that the server socket itself returns individual
+ * client sockets, each corresponding to a single HTTP request.
+ *
+ * A client socket in turn will emit three messages: 
+ *  1. request method+path,
+ *  2. request headers
+ *  3. request body
+ *
+ * And expects three responses:
+ *  1. response code (e.g., 200)
+ *  2. response headers
+ *  3. response body
+ */
+sockethandle_t pollnet_serve_http_dynamic(pollnet_ctx* ctx, const char* addr);
+
+/*
  * Add a virtual file to an HTTP server socket: a request to the path
  * will return the provided data. If the server also serves physical files,
  * then if a virtual file and a physical file have the same path, the

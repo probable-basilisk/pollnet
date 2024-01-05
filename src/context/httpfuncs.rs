@@ -1,5 +1,4 @@
-use http_body_util::BodyExt;
-use http_body_util::Full;
+use http_body_util::{Full, BodyExt};
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -7,17 +6,15 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener; // read_to_end()
 
 use std::collections::HashMap;
 use std::io::Error as IoError;
-use std::path::Path;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
-use std::path::{Component, PathBuf};
+use std::path::{Path, Component, PathBuf};
 
 use super::*;
 
