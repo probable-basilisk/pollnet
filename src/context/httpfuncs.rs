@@ -1,6 +1,5 @@
-use futures::channel::oneshot::channel;
-use futures_util::lock::Mutex;
 use http_body_util::Full;
+use http_body_util::BodyExt;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -14,6 +13,7 @@ use tokio::net::TcpListener; // read_to_end()
 use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -104,16 +104,88 @@ async fn handle_http_request<B>(
     }
 }
 
-async fn handle_dyn_http_request<B>(
-    req: Request<B>,
+fn parse_status(msg: Option<PollnetMessage>) -> StatusCode {
+    match msg {
+        Some(PollnetMessage::Text(txt)) => {
+            StatusCode::from_str(&txt).ok()
+        },
+        Some(PollnetMessage::Binary(bin)) => {
+            StatusCode::from_bytes(&bin).ok()
+        },
+        _ => {
+            None
+        }
+    }.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn parse_headers_msg(msg: Option<PollnetMessage>) -> Vec<(String, String)> {
+    let headerstr = match msg {
+        Some(PollnetMessage::Binary(msg)) => {
+            String::from_utf8_lossy(&msg).into_owned()
+        },
+        Some(PollnetMessage::Text(msg)) => {
+            msg
+        },
+        _ => "".to_string()
+    };
+    parse_header_pairs(&headerstr)
+}
+
+fn parse_body(msg: Option<PollnetMessage>) -> Full<Bytes> {
+    match msg {
+        Some(PollnetMessage::Binary(bin)) => {
+            Full::new(bin.into())
+        },
+        Some(PollnetMessage::Text(txt)) => {
+            Full::new(txt.into())
+        },
+        _ => Full::new(Bytes::new())
+    }
+}
+
+fn insert_header(headers: &mut hyper::HeaderMap, k: &str, v: &str) -> Option<()> {
+    let k = hyper::header::HeaderName::from_bytes(k.as_bytes()).ok()?;
+    let v = hyper::header::HeaderValue::from_str(v).ok()?;
+    headers.insert(k, v);
+    Some(())
+}
+
+async fn send_req_info(req: Request<hyper::body::Incoming>, tx: &mut std::sync::mpsc::Sender<PollnetMessage>) -> Option<()> {
+    let req_method = req.method().as_str();
+    let req_path = req.uri().to_string();
+    let method_path = format!("{} {}", req_method, req_path);
+
+    let req_headers = format_headers_2(req.headers());
+    let req_body = req.collect().await.ok()?.to_bytes();
+
+    tx.send(PollnetMessage::Text(method_path)).ok()?;
+    tx.send(PollnetMessage::Text(req_headers)).ok()?;
+    tx.send(PollnetMessage::Binary(req_body.to_vec())).ok()?;
+    Some(())
+}
+
+async fn handle_dyn_http_request(
+    req: Request<hyper::body::Incoming>,
     channels: Arc<tokio::sync::Mutex<ReactorChannels>>,
 ) -> ReqResult {
     let mut lock = channels.lock().await;
-    lock.tx
-        .send(PollnetMessage::Text("woo".to_owned()))
-        .unwrap();
-    let eh = lock.rx.recv().await;
-    not_found("NYI!")
+
+    if send_req_info(req, &mut lock.tx).await.is_none() {
+        error!("Failed to send request info for some reason?");
+    }
+
+    let status = parse_status(lock.rx.recv().await);
+    let hmap = parse_headers_msg(lock.rx.recv().await);
+    let body = parse_body(lock.rx.recv().await);
+
+    let mut resp = Response::builder().status(status);
+    let headers = resp.headers_mut().unwrap();
+    for (key, value) in hmap.iter() {
+        insert_header(headers, key, value).unwrap_or_default()
+    }
+
+    resp.body(body)
+        .map_err(|_| IoError::new(std::io::ErrorKind::Other, "Rust errors are a pain"))
 }
 
 async fn handle_get(
@@ -164,6 +236,24 @@ fn parse_header_line(line: &str) -> Option<(HeaderName, &str)> {
     Some((name, header_v))
 }
 
+fn parse_header_pairs(header_str: &str) -> Vec<(String, String)> {
+    let mut res = Vec::new();
+    for line in header_str.split('\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let (header_k, header_v) = match line.split_once(':') {
+            Some(p) => p,
+            None => {
+                error!("Invalid header line: \"{:}\"", line);
+                continue
+            }
+        };
+        res.push((header_k.to_string(), header_v.to_string()));
+    }
+    res
+}
+
 fn parse_headers(header_str: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for line in header_str.split('\n') {
@@ -186,7 +276,21 @@ fn parse_headers(header_str: &str) -> HeaderMap {
     headers
 }
 
+// yes these functions are identical but hyper and tungstenite are
+// using two different versions of http (yay) so the actual types are slightly
+// different and I can't be bothered to wrap this in a macro or something
 fn format_headers(header_map: &HeaderMap) -> String {
+    let mut headers = String::new();
+    for (key, value) in header_map.iter() {
+        headers.push_str(key.as_ref());
+        headers.push(':');
+        headers.push_str(value.to_str().unwrap_or("MALFORMED"));
+        headers.push('\n');
+    }
+    headers
+}
+
+fn format_headers_2(header_map: &hyper::HeaderMap) -> String {
     let mut headers = String::new();
     for (key, value) in header_map.iter() {
         headers.push_str(key.as_ref());
@@ -262,13 +366,6 @@ async fn accept_http_tcp_dynamic(
     }
 
     // I guess we just won't close it...
-}
-
-async fn accept_http_tcp_dynamic2(
-    stream: TcpStream,
-    addr: SocketAddr,
-    outer_tx: std::sync::mpsc::Sender<PollnetMessage>,
-) {
 }
 
 async fn accept_http_tcp(
