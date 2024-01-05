@@ -1,3 +1,5 @@
+use futures::channel::oneshot::channel;
+use futures_util::lock::Mutex;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -6,7 +8,7 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener; // read_to_end()
 
 use std::collections::HashMap;
@@ -100,6 +102,18 @@ async fn handle_http_request<B>(
         Some(dir) => simple_file_send(&dir, path).await,
         None => not_found(path),
     }
+}
+
+async fn handle_dyn_http_request<B>(
+    req: Request<B>,
+    channels: Arc<tokio::sync::Mutex<ReactorChannels>>,
+) -> ReqResult {
+    let mut lock = channels.lock().await;
+    lock.tx
+        .send(PollnetMessage::Text("woo".to_owned()))
+        .unwrap();
+    let eh = lock.rx.recv().await;
+    not_found("NYI!")
 }
 
 async fn handle_get(
@@ -218,6 +232,45 @@ async fn handle_http_response(
     Ok(())
 }
 
+async fn accept_http_tcp_dynamic(
+    stream: TcpStream,
+    addr: SocketAddr,
+    outer_tx: std::sync::mpsc::Sender<PollnetMessage>,
+) {
+    let (host_io, reactor_io) = create_channels();
+    let stream = TokioIo::new(stream);
+    let reactor_io = Arc::new(tokio::sync::Mutex::new(reactor_io));
+
+    if outer_tx
+        .send(PollnetMessage::NewClient(ClientConn {
+            io: host_io,
+            id: addr.to_string(),
+        }))
+        .is_ok()
+    {
+        if let Err(err) = http1::Builder::new()
+            .serve_connection(
+                stream,
+                service_fn(|req| handle_dyn_http_request(req, reactor_io.clone())),
+            )
+            .await
+        {
+            error!("Error serving connection: {:?}", err);
+        }
+    } else {
+        warn!("TCP socket closed at weird time.");
+    }
+
+    // I guess we just won't close it...
+}
+
+async fn accept_http_tcp_dynamic2(
+    stream: TcpStream,
+    addr: SocketAddr,
+    outer_tx: std::sync::mpsc::Sender<PollnetMessage>,
+) {
+}
+
 async fn accept_http_tcp(
     stream: TcpStream,
     _addr: SocketAddr,
@@ -238,6 +291,60 @@ async fn accept_http_tcp(
 }
 
 impl PollnetContext {
+    pub fn serve_http_dynamic(&mut self, addr: String) -> SocketHandle {
+        let (host_io, mut reactor_io) = create_channels();
+
+        // Spawn a future onto the runtime
+        self.rt_handle.spawn(async move {
+            let listener = match TcpListener::bind(&addr).await {
+                Ok(listener) => listener,
+                Err(tcp_err) => {
+                    send_error(reactor_io.tx, tcp_err);
+                    return;
+                }
+            };
+
+            info!("DYN HTTP server running on http://{}/", addr);
+
+            // We start a loop to continuously accept incoming connections
+            loop {
+                tokio::select! {
+                    from_c_message = reactor_io.rx.recv() => {
+                        match from_c_message {
+                            Some(PollnetMessage::Disconnect)
+                            | Some(PollnetMessage::Error(_))
+                            | None => break,
+                            _ => {} // ignore everything else
+                        }
+                    },
+                    new_client = listener.accept() => {
+                        match new_client {
+                            Err(e) => {
+                                error!("Client failed to connect: {:?}", e);
+                            },
+                            Ok((stream, addr)) => {
+                                tokio::spawn(
+                                    accept_http_tcp_dynamic(
+                                        stream, addr, reactor_io.tx.clone()
+                                    )
+                                );
+                            }
+                        }
+                    },
+                };
+            }
+            info!("HTTP server stopped.");
+        });
+
+        let socket = Box::new(PollnetSocket {
+            io: Some(host_io),
+            status: SocketStatus::Opening,
+            data: None,
+            last_client_handle: SocketHandle::null(),
+        });
+        self.sockets.insert(socket)
+    }
+
     pub fn serve_http(&mut self, addr: String, serve_dir: Option<String>) -> SocketHandle {
         let (host_io, mut reactor_io) = create_channels();
 
@@ -297,7 +404,7 @@ impl PollnetContext {
                         }
                     },
                 };
-            };
+            }
             info!("HTTP server stopped.");
         });
 
