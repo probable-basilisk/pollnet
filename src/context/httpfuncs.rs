@@ -1,5 +1,5 @@
-use http_body_util::Full;
 use http_body_util::BodyExt;
+use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -106,40 +106,27 @@ async fn handle_http_request<B>(
 
 fn parse_status(msg: Option<PollnetMessage>) -> StatusCode {
     match msg {
-        Some(PollnetMessage::Text(txt)) => {
-            StatusCode::from_str(&txt).ok()
-        },
-        Some(PollnetMessage::Binary(bin)) => {
-            StatusCode::from_bytes(&bin).ok()
-        },
-        _ => {
-            None
-        }
-    }.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        Some(PollnetMessage::Text(txt)) => StatusCode::from_str(&txt).ok(),
+        Some(PollnetMessage::Binary(bin)) => StatusCode::from_bytes(&bin).ok(),
+        _ => None,
+    }
+    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 fn parse_headers_msg(msg: Option<PollnetMessage>) -> Vec<(String, String)> {
     let headerstr = match msg {
-        Some(PollnetMessage::Binary(msg)) => {
-            String::from_utf8_lossy(&msg).into_owned()
-        },
-        Some(PollnetMessage::Text(msg)) => {
-            msg
-        },
-        _ => "".to_string()
+        Some(PollnetMessage::Binary(msg)) => String::from_utf8_lossy(&msg).into_owned(),
+        Some(PollnetMessage::Text(msg)) => msg,
+        _ => "".to_string(),
     };
     parse_header_pairs(&headerstr)
 }
 
 fn parse_body(msg: Option<PollnetMessage>) -> Full<Bytes> {
     match msg {
-        Some(PollnetMessage::Binary(bin)) => {
-            Full::new(bin.into())
-        },
-        Some(PollnetMessage::Text(txt)) => {
-            Full::new(txt.into())
-        },
-        _ => Full::new(Bytes::new())
+        Some(PollnetMessage::Binary(bin)) => Full::new(bin.into()),
+        Some(PollnetMessage::Text(txt)) => Full::new(txt.into()),
+        _ => Full::new(Bytes::new()),
     }
 }
 
@@ -150,7 +137,10 @@ fn insert_header(headers: &mut hyper::HeaderMap, k: &str, v: &str) -> Option<()>
     Some(())
 }
 
-async fn send_req_info(req: Request<hyper::body::Incoming>, tx: &mut std::sync::mpsc::Sender<PollnetMessage>) -> Option<()> {
+async fn send_req_info(
+    req: Request<hyper::body::Incoming>,
+    tx: &mut std::sync::mpsc::Sender<PollnetMessage>,
+) -> Option<()> {
     let req_method = req.method().as_str();
     let req_path = req.uri().to_string();
     let method_path = format!("{} {}", req_method, req_path);
@@ -246,7 +236,7 @@ fn parse_header_pairs(header_str: &str) -> Vec<(String, String)> {
             Some(p) => p,
             None => {
                 error!("Invalid header line: \"{:}\"", line);
-                continue
+                continue;
             }
         };
         res.push((header_k.to_string(), header_v.to_string()));
