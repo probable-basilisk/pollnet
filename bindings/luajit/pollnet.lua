@@ -201,17 +201,17 @@ function socket_mt:remove_virtual_file(filename)
 end
 
 function socket_mt:listen_ws(addr, callback)
-  if callback then self:_on_connection(callback) end
+  if callback then self:on_connection(callback) end
   return self:_open(pollnet.pollnet_listen_ws, addr)
 end
 
 function socket_mt:listen_tcp(addr, callback)
-  if callback then self:_on_connection(callback) end
+  if callback then self:on_connection(callback) end
   return self:_open(pollnet.pollnet_listen_tcp, addr)
 end
 
-function socket_mt:serve_http_dynamic(addr, callback)
-  if callback then self:_on_connection(callback) end
+function socket_mt:serve_dynamic_http(addr, callback)
+  if callback then self:on_connection(callback) end
   return self:_open(pollnet.pollnet_serve_dynamic_http, addr)
 end
 
@@ -294,6 +294,12 @@ function socket_mt:send(msg)
   pollnet.pollnet_send(_ctx, self._socket, msg)
 end
 
+function socket_mt:send_binary(msg)
+  assert(self._socket)
+  assert(type(msg) == 'string', "Argument to send must be a string")
+  pollnet.pollnet_send_binary(_ctx, self._socket, msg, #msg)
+end
+
 function socket_mt:close()
   if not self._socket then return end
   pollnet.pollnet_close(_ctx, self._socket)
@@ -304,20 +310,24 @@ local function open_ws(url)
   return Socket():open_ws(url)
 end
 
-local function listen_ws(addr)
-  return Socket():listen_ws(addr)
+local function listen_ws(addr, callback)
+  return Socket():listen_ws(addr, callback)
 end
 
 local function open_tcp(addr)
   return Socket():open_tcp(addr)
 end
 
-local function listen_tcp(addr)
-  return Socket():listen_tcp(addr)
+local function listen_tcp(addr, callback)
+  return Socket():listen_tcp(addr, callback)
 end
 
 local function serve_http(addr, dir)
   return Socket():serve_http(addr, dir)
+end
+
+local function serve_dynamic_http(addr, callback)
+  return Socket():serve_dynamic_http(addr, callback)
 end
 
 local function http_get(url, headers, return_body_only)
@@ -348,6 +358,7 @@ return {
   open_tcp = open_tcp,
   listen_tcp = listen_tcp,
   serve_http = serve_http,
+  serve_dynamic_http = serve_dynamic_http,
   http_get = http_get,
   http_post = http_post,
   Socket = Socket,

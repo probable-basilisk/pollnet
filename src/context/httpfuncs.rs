@@ -155,6 +155,8 @@ async fn handle_dyn_http_request(
     req: Request<hyper::body::Incoming>,
     channels: Arc<tokio::sync::Mutex<ReactorChannels>>,
 ) -> ReqResult {
+    debug!("Incoming request!");
+
     let mut lock = channels.lock().await;
 
     if send_req_info(req, &lock.tx).await.is_none() {
@@ -332,6 +334,8 @@ async fn accept_http_tcp_dynamic(
     let stream = TokioIo::new(stream);
     let reactor_io = Arc::new(tokio::sync::Mutex::new(reactor_io));
 
+    debug!("New HTTP/TCP connection! {:}", addr);
+
     if outer_tx
         .send(PollnetMessage::NewClient(ClientConn {
             io: host_io,
@@ -339,7 +343,9 @@ async fn accept_http_tcp_dynamic(
         }))
         .is_ok()
     {
+        // Note keep_alive set to false! Otherwise weird stuff happens
         if let Err(err) = http1::Builder::new()
+            .keep_alive(false)
             .serve_connection(
                 stream,
                 service_fn(|req| handle_dyn_http_request(req, reactor_io.clone())),
@@ -351,7 +357,7 @@ async fn accept_http_tcp_dynamic(
         let lock = reactor_io.lock().await;
         let _ = lock.tx.send(PollnetMessage::Disconnect);
     } else {
-        warn!("TCP socket closed at weird time.");
+        error!("TCP socket {:} closed at weird time.", addr);
     }
 
     // I guess we just won't close it...
