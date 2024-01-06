@@ -37,6 +37,7 @@ uint32_t pollnet_get_error(pollnet_ctx* ctx, sockethandle_t handle, char* dest, 
 sockethandle_t pollnet_get_connected_client_handle(pollnet_ctx* ctx, sockethandle_t handle);
 sockethandle_t pollnet_listen_ws(pollnet_ctx* ctx, const char* addr);
 sockethandle_t pollnet_serve_static_http(pollnet_ctx* ctx, const char* addr, const char* serve_dir);
+sockethandle_t pollnet_serve_dynamic_http(pollnet_ctx* ctx, const char* addr);
 sockethandle_t pollnet_serve_http(pollnet_ctx* ctx, const char* addr);
 void pollnet_add_virtual_file(pollnet_ctx* ctx, sockethandle_t handle, const char* filename, const char* filedata, uint32_t filesize);
 void pollnet_remove_virtual_file(pollnet_ctx* ctx, sockethandle_t handle, const char* filename);
@@ -199,12 +200,19 @@ function socket_mt:remove_virtual_file(filename)
   pollnet.pollnet_remove_virtual_file(_ctx, self._socket, filename)
 end
 
-function socket_mt:listen_ws(addr)
+function socket_mt:listen_ws(addr, callback)
+  if callback then self:_on_connection(callback) end
   return self:_open(pollnet.pollnet_listen_ws, addr)
 end
 
-function socket_mt:listen_tcp(addr)
+function socket_mt:listen_tcp(addr, callback)
+  if callback then self:_on_connection(callback) end
   return self:_open(pollnet.pollnet_listen_tcp, addr)
+end
+
+function socket_mt:serve_http_dynamic(addr, callback)
+  if callback then self:_on_connection(callback) end
+  return self:_open(pollnet.pollnet_serve_dynamic_http, addr)
 end
 
 function socket_mt:on_connection(f)

@@ -231,7 +231,7 @@ sockethandle_t pollnet_serve_http(pollnet_ctx* ctx, const char* addr);
  *  2. response headers
  *  3. response body
  */
-sockethandle_t pollnet_serve_http_dynamic(pollnet_ctx* ctx, const char* addr);
+sockethandle_t pollnet_serve_dynamic_http(pollnet_ctx* ctx, const char* addr);
 
 /*
  * Add a virtual file to an HTTP server socket: a request to the path

@@ -161,7 +161,10 @@ pub unsafe extern "C" fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *con
 ///
 /// ctx must be valid
 #[no_mangle]
-pub unsafe extern "C" fn pollnet_serve_http_dynamic(ctx: *mut PollnetContext, addr: *const c_char) -> u64 {
+pub unsafe extern "C" fn pollnet_serve_dynamic_http(
+    ctx: *mut PollnetContext,
+    addr: *const c_char,
+) -> u64 {
     let ctx = unsafe { &mut *ctx };
     let addr = c_str_to_string(addr);
     ctx.serve_http_dynamic(addr).into()

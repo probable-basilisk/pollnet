@@ -1,4 +1,4 @@
-use http_body_util::{Full, BodyExt};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -14,7 +14,7 @@ use std::io::Error as IoError;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use std::path::{Path, Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::*;
 
@@ -136,7 +136,7 @@ fn insert_header(headers: &mut hyper::HeaderMap, k: &str, v: &str) -> Option<()>
 
 async fn send_req_info(
     req: Request<hyper::body::Incoming>,
-    tx: &mut std::sync::mpsc::Sender<PollnetMessage>,
+    tx: &std::sync::mpsc::Sender<PollnetMessage>,
 ) -> Option<()> {
     let req_method = req.method().as_str();
     let req_path = req.uri().to_string();
@@ -157,7 +157,7 @@ async fn handle_dyn_http_request(
 ) -> ReqResult {
     let mut lock = channels.lock().await;
 
-    if send_req_info(req, &mut lock.tx).await.is_none() {
+    if send_req_info(req, &lock.tx).await.is_none() {
         error!("Failed to send request info for some reason?");
     }
 
@@ -347,7 +347,9 @@ async fn accept_http_tcp_dynamic(
             .await
         {
             error!("Error serving connection: {:?}", err);
-        }
+        };
+        let lock = reactor_io.lock().await;
+        let _ = lock.tx.send(PollnetMessage::Disconnect);
     } else {
         warn!("TCP socket closed at weird time.");
     }
