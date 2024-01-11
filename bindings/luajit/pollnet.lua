@@ -280,6 +280,33 @@ function socket_mt:poll()
   end
 end
 
+function socket_mt:await()
+  local yield_count = 0
+  while true do
+    if self.timeout and (yield_count > self.timeout) then
+      return false, "timeout"
+    end
+    local happy, msg = self:poll()
+    if not happy then 
+      self:close()
+      return false, "error: " .. tostring(msg)
+    end
+    if msg then return msg end
+    yield_count = yield_count + 1
+    coroutine.yield()
+  end
+end
+
+function socket_mt:await_n(count)
+  local parts = {}
+  for idx = 1, count do
+    local part, err = self:await()
+    if not part then return false, err end
+    parts[idx] = part
+  end
+  return parts
+end
+
 function socket_mt:last_message()
   return self._last_message
 end
@@ -306,38 +333,6 @@ function socket_mt:close()
   self._socket = nil
 end
 
-local function open_ws(url)
-  return Socket():open_ws(url)
-end
-
-local function listen_ws(addr, callback)
-  return Socket():listen_ws(addr, callback)
-end
-
-local function open_tcp(addr)
-  return Socket():open_tcp(addr)
-end
-
-local function listen_tcp(addr, callback)
-  return Socket():listen_tcp(addr, callback)
-end
-
-local function serve_http(addr, dir)
-  return Socket():serve_http(addr, dir)
-end
-
-local function serve_dynamic_http(addr, callback)
-  return Socket():serve_dynamic_http(addr, callback)
-end
-
-local function http_get(url, headers, return_body_only)
-  return Socket():http_get(url, headers, return_body_only)
-end
-
-local function http_post(url, headers, body, return_body_only)
-  return Socket():http_post(url, headers, body, return_body_only)
-end
-
 local function get_nanoid()
   local _id_scratch = ffi.new("int8_t[?]", 128)
   local msg_size = pollnet.pollnet_get_nanoid(_id_scratch, 128)
@@ -348,22 +343,82 @@ local function sleep_ms(ms)
   pollnet.pollnet_sleep_ms(ms)
 end
 
-return {
+local reactor_mt = {}
+local function Reactor()
+  local ret = setmetatable({}, {__index = reactor_mt})
+  ret:init()
+  return ret
+end
+
+function reactor_mt:init()
+  self.threads = {}
+end
+
+function reactor_mt:run(thread_body)
+  local thread = coroutine.create(function()
+    thread_body(self)
+  end)
+  self.threads[thread] = true
+end
+
+function reactor_mt:run_server(server_sock, client_body)
+  server_sock:on_connection(function(client_sock, addr)
+    self:run(function()
+      client_body(client_sock, addr)
+    end)
+  end)
+  self:run(function()
+    while true do server_sock:await() end
+  end)
+end
+
+function reactor_mt:log(...)
+  print(...)
+end
+
+function reactor_mt:update()
+  local live_count = 0
+  local cur_threads = self.threads
+  self.threads = {}
+  for thread, _ in pairs(cur_threads) do
+    if coroutine.status(thread) == "dead" then
+      cur_threads[thread] = nil
+    else
+      live_count = live_count + 1
+      local happy, err = coroutine.resume(thread)
+      if not happy then self:log("Error", err) end
+    end
+  end
+  for thread, _ in pairs(self.threads) do
+    live_count = live_count + 1
+    cur_threads[thread] = true
+  end
+  self.threads = cur_threads
+  return live_count
+end
+
+local exports = {
   VERSION = POLLNET_VERSION,
   init = init_ctx,
   init_hack_static = init_ctx_hack_static,
   shutdown = shutdown_ctx, 
-  open_ws = open_ws, 
-  listen_ws = listen_ws,
-  open_tcp = open_tcp,
-  listen_tcp = listen_tcp,
-  serve_http = serve_http,
-  serve_dynamic_http = serve_dynamic_http,
-  http_get = http_get,
-  http_post = http_post,
   Socket = Socket,
+  Reactor = Reactor,
   pollnet = pollnet,
   nanoid = get_nanoid,
   sleep_ms = sleep_ms,
   format_headers = format_headers
 }
+
+local fnames = {
+  "open_ws", "listen_ws", "open_tcp", "listen_tcp",
+  "serve_http", "serve_dynamic_http", "http_get", "http_post"
+}
+for _, name in ipairs(fnames) do
+  exports[name] = function(...)
+    local sock = Socket()
+    return sock[name](sock, ...)
+  end
+end
+
+return exports
