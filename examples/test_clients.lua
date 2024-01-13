@@ -87,6 +87,18 @@ local function test_local_ws()
   sock:send(tostring(13))
   local res = assert(get_messages_until_closed(sock))
   expect(#res, 13, "WS correct message count")
+
+  -- test getting messages faster than yield rate
+  local t0 = os.time()
+  local sock = with_timeout(pollnet.open_ws("ws://127.0.0.1:9090"))
+  -- blast enough messages that it would take 5s to receive them if we
+  -- only polled one message per DELAY_MS
+  local count = math.ceil(5000 / DELAY_MS) 
+  sock:send(("%d BLAST"):format(count))
+  local res = assert(get_messages_until_closed(sock))
+  local dt = os.time() - t0
+  expect(#res, count, "WS BLAST correct message count")
+  ok(dt < 1, "WS BLAST received faster than yield rate", ("Took %f"):format(dt))
 end
 
 local function validate_status_transitions(statuses, testname)

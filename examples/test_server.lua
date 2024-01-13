@@ -16,7 +16,8 @@ end
 local function countdown_thread(sock, name)
   local msg = sock:await()
   print("Msg from", name, msg)
-  local count = tonumber(msg)
+  local count, yield = msg:match("^([%d]+) ?(.*)$")
+  count = tonumber(count)
   if not count then
     sock:send("ECHO:" .. msg)
     sock:close()
@@ -24,7 +25,7 @@ local function countdown_thread(sock, name)
   end
   for idx = 1, count do
     sock:send("COUNT: " .. idx)
-    coroutine.yield()
+    if yield ~= "BLAST" then coroutine.yield() end
   end
   sock:close()
 end
