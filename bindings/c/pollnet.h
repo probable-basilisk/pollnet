@@ -230,8 +230,12 @@ sockethandle_t pollnet_serve_http(pollnet_ctx* ctx, const char* addr);
  *  1. response code (e.g., 200)
  *  2. response headers
  *  3. response body
+ *
+ * If keep_alive is true, then a single client socket can keep repeating this pattern
+ * to serve multiple requests on the same TCP socket; otherwise, the socket will be closed
+ * after the first request-response round.
  */
-sockethandle_t pollnet_serve_dynamic_http(pollnet_ctx* ctx, const char* addr);
+sockethandle_t pollnet_serve_dynamic_http(pollnet_ctx* ctx, const char* addr, bool keep_alive);
 
 /*
  * Add a virtual file to an HTTP server socket: a request to the path

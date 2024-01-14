@@ -164,10 +164,11 @@ pub unsafe extern "C" fn pollnet_serve_http(ctx: *mut PollnetContext, addr: *con
 pub unsafe extern "C" fn pollnet_serve_dynamic_http(
     ctx: *mut PollnetContext,
     addr: *const c_char,
+    keep_alive: bool
 ) -> u64 {
     let ctx = unsafe { &mut *ctx };
     let addr = c_str_to_string(addr);
-    ctx.serve_http_dynamic(addr).into()
+    ctx.serve_http_dynamic(addr, keep_alive).into()
 }
 
 /// # Safety

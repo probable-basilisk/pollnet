@@ -37,7 +37,7 @@ uint32_t pollnet_get_error(pollnet_ctx* ctx, sockethandle_t handle, char* dest, 
 sockethandle_t pollnet_get_connected_client_handle(pollnet_ctx* ctx, sockethandle_t handle);
 sockethandle_t pollnet_listen_ws(pollnet_ctx* ctx, const char* addr);
 sockethandle_t pollnet_serve_static_http(pollnet_ctx* ctx, const char* addr, const char* serve_dir);
-sockethandle_t pollnet_serve_dynamic_http(pollnet_ctx* ctx, const char* addr);
+sockethandle_t pollnet_serve_dynamic_http(pollnet_ctx* ctx, const char* addr, bool keep_alive);
 sockethandle_t pollnet_serve_http(pollnet_ctx* ctx, const char* addr);
 void pollnet_add_virtual_file(pollnet_ctx* ctx, sockethandle_t handle, const char* filename, const char* filedata, uint32_t filesize);
 void pollnet_remove_virtual_file(pollnet_ctx* ctx, sockethandle_t handle, const char* filename);
@@ -137,9 +137,39 @@ local function format_headers(headers)
   table.sort(keys)
   local frags = {}
   for idx, name in ipairs(keys) do
-    frags[idx] = ("%s:%s"):format(name, headers[name])
+    local val = headers[name]
+    if type(val) == 'string' then
+      table.insert(frags, ("%s:%s"):format(name, val))
+    else -- assume table representing a duplicated header
+      for _, subval in ipairs(val) do
+        table.insert(frags, ("%s:%s"):format(name, subval))
+      end
+    end
   end
   return table.concat(frags, "\n")
+end
+
+local function parse_headers(headers_str)
+  local headers = {}
+  for line in headers_str:gmatch("[^\n]+") do
+    local key, val = line:match("^([^:]*):(.*)$")
+    if key then headers[key:lower()] = val end
+  end
+  return headers
+end
+
+local function parse_query(s)
+  local queries = {[1]=s}
+  for k, v in s:gmatch("([^=&]+)=([^&]+)") do
+    queries[k] = v
+  end
+  return queries
+end
+
+local function parse_method(s)
+  local method, path, query = s:match("^(%w+) ([^?]+)%??(.*)$")
+  local queries = parse_query(query)
+  return method, path, queries
 end
 
 function socket_mt:http_get(url, headers, ret_body_only)
@@ -210,9 +240,9 @@ function socket_mt:listen_tcp(addr, callback)
   return self:_open(pollnet.pollnet_listen_tcp, addr)
 end
 
-function socket_mt:serve_dynamic_http(addr, callback)
+function socket_mt:serve_dynamic_http(addr, keep_alive, callback)
   if callback then self:on_connection(callback) end
-  return self:_open(pollnet.pollnet_serve_dynamic_http, addr)
+  return self:_open(pollnet.pollnet_serve_dynamic_http, addr, keep_alive or false)
 end
 
 function socket_mt:on_connection(f)
@@ -407,7 +437,9 @@ local exports = {
   pollnet = pollnet,
   nanoid = get_nanoid,
   sleep_ms = sleep_ms,
-  format_headers = format_headers
+  format_headers = format_headers,
+  parse_headers = parse_headers,
+  parse_method = parse_method
 }
 
 local fnames = {

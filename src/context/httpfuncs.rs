@@ -328,6 +328,7 @@ async fn handle_http_response(
 async fn accept_http_tcp_dynamic(
     stream: TcpStream,
     addr: SocketAddr,
+    keep_alive: bool,
     outer_tx: std::sync::mpsc::Sender<PollnetMessage>,
 ) {
     let (host_io, reactor_io) = create_channels();
@@ -343,9 +344,8 @@ async fn accept_http_tcp_dynamic(
         }))
         .is_ok()
     {
-        // Note keep_alive set to false! Otherwise weird stuff happens
         if let Err(err) = http1::Builder::new()
-            .keep_alive(false)
+            .keep_alive(keep_alive)
             .serve_connection(
                 stream,
                 service_fn(|req| handle_dyn_http_request(req, reactor_io.clone())),
@@ -383,7 +383,7 @@ async fn accept_http_tcp(
 }
 
 impl PollnetContext {
-    pub fn serve_http_dynamic(&mut self, addr: String) -> SocketHandle {
+    pub fn serve_http_dynamic(&mut self, addr: String, keep_alive: bool) -> SocketHandle {
         let (host_io, mut reactor_io) = create_channels();
 
         // Spawn a future onto the runtime
@@ -417,7 +417,7 @@ impl PollnetContext {
                             Ok((stream, addr)) => {
                                 tokio::spawn(
                                     accept_http_tcp_dynamic(
-                                        stream, addr, reactor_io.tx.clone()
+                                        stream, addr, keep_alive, reactor_io.tx.clone()
                                     )
                                 );
                             }
