@@ -7,7 +7,8 @@ end
 local target_channel = arg[1]
 local url = "wss://irc-ws.chat.twitch.tv:443"
 
-local thread = coroutine.create(function()
+local reactor = pollnet.Reactor()
+reactor:run(function()
   local sock = pollnet.open_ws(url)
   -- Note: connecting is asynchronous, so the
   -- socket isn't yet open! But we can queue up sends anyway.
@@ -18,21 +19,17 @@ local thread = coroutine.create(function()
   sock:send("JOIN #" .. target_channel)
 
   while true do
-    local happy, msg = sock:poll()
-    if not happy then break end
-    if msg and msg == "PING :tmi.twitch.tv" then
+    local msg = assert(sock:await())
+    if msg == "PING :tmi.twitch.tv" then
       sock:send("PONG :tmi.twitch.tv")
-    elseif msg then
+    else
       print(msg)
     end
-    coroutine.yield()
   end
-  print("Socket closed: ", sock:last_message())
 end)
 
 -- In a typical application-embedded Lua context the application would
--- have its own 'main loop', which we emulate here
-while coroutine.status(thread) ~= "dead" do
-  coroutine.resume(thread)
-  pollnet.sleep_ms(20) -- Blocking!
+-- have its own 'main loop', and you'd just call reactor:update once per frame
+while reactor:update() > 0 do
+  pollnet.sleep_ms(50) -- Blocking!
 end
