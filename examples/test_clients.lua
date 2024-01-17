@@ -151,6 +151,11 @@ local function http_get(url, headers, body_only)
   return assert(sock:await_n(n_parts))
 end
 
+local function http_post(url, headers, body)
+  local sock = with_timeout(pollnet.http_post(url, headers, body, false))
+  return assert(sock:await_n(3))
+end
+
 local function test_local_http()
   local res = http_get("http://127.0.0.1:8080/testfile.txt")
   expect_match(res[1], "^200", "HTTP GET status 200")
@@ -171,6 +176,17 @@ local function test_local_http()
 
   local res = http_get("http://127.0.0.1:8080/virt/b.bin")
   expect(res[3], "HELLO\x00\x00VIRTUAL\x00", "HTTP GET binary")
+
+  local res = http_get("http://127.0.0.1:8383/foo/bar.txt")
+  expect_match(res[1], "^404", "Dyn HTTP GET missing file correct 404")
+
+  local postbody = "HELLO\x00\x00dynamic\x00"
+  local res = http_post("http://127.0.0.1:8383/foo/bar.txt", {}, postbody)
+  expect_match(res[1], "^200", "HTTP POST succeeded")
+
+  local res = http_get("http://127.0.0.1:8383/foo/bar.txt")
+  expect_match(res[1], "^200", "Dyn HTTP GET succeeded")
+  expect(res[3], postbody, "Dyn HTTP GET body")
 
   -- no server should be open on this socket
   --[[

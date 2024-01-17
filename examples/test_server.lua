@@ -76,6 +76,21 @@ do
   end)
 end
 
+do
+  local files = {}
+  local handler = pollnet.wrap_req_handler(function(req)
+    if req.method == "POST" then
+      files[req.path] = req.body
+      return {status = "200", body = "ok"}
+    end
+
+    local body = files[req.path]
+    return {status = (body and "200") or "404", body = body}
+  end)
+
+  reactor:run_server(pollnet.serve_dynamic_http("0.0.0.0:8383"), handler)
+end
+
 while reactor:update() > 0 do
   pollnet.sleep_ms(20)
 end

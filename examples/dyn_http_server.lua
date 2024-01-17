@@ -49,6 +49,7 @@ reactor:run_server(pollnet.serve_dynamic_http(HOST_ADDR, true), function(req_soc
     req_sock:send_binary(reply.body or "")
   end
   print("Connection", addr, "closed.")
+  req_sock:close()
 end)
 
 print("Serving on", HOST_ADDR)

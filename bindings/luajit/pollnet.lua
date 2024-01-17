@@ -427,6 +427,30 @@ function reactor_mt:update()
   return live_count
 end
 
+local function wrap_req_handler(handler)
+  return function(req_sock, addr)
+    while true do
+      local raw_req = req_sock:await_n(3)
+      if not raw_req then break end
+      local method, path, query = parse_method(raw_req[1])
+      local headers = parse_headers(raw_req[2])
+      local reply = assert(handler{
+        addr = addr,
+        method = method,
+        path = path,
+        query = query,
+        headers = headers,
+        body = raw_req[3],
+        raw = raw_req
+      })
+      req_sock:send(reply.status or "404")
+      req_sock:send(format_headers(reply.headers or {}))
+      req_sock:send_binary(reply.body or "")
+    end
+    req_sock:close()
+  end
+end
+
 local exports = {
   VERSION = POLLNET_VERSION,
   init = init_ctx,
@@ -439,7 +463,8 @@ local exports = {
   sleep_ms = sleep_ms,
   format_headers = format_headers,
   parse_headers = parse_headers,
-  parse_method = parse_method
+  parse_method = parse_method,
+  wrap_req_handler = wrap_req_handler
 }
 
 local fnames = {
