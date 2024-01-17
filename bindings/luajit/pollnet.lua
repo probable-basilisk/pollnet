@@ -427,14 +427,26 @@ function reactor_mt:update()
   return live_count
 end
 
-local function wrap_req_handler(handler)
+local function invoke_handler(handler, req, expose_errors)
+  local happy, res = pcall(handler, req)
+  if happy then 
+    return res 
+  else
+    return {
+      status = "500", 
+      body = (expose_errors and tostring(res)) or "Internal Error"
+    }
+  end
+end
+
+local function wrap_req_handler(handler, expose_errors)
   return function(req_sock, addr)
     while true do
       local raw_req = req_sock:await_n(3)
       if not raw_req then break end
       local method, path, query = parse_method(raw_req[1])
       local headers = parse_headers(raw_req[2])
-      local reply = assert(handler{
+      local reply = invoke_handler(handler, {
         addr = addr,
         method = method,
         path = path,
@@ -442,7 +454,7 @@ local function wrap_req_handler(handler)
         headers = headers,
         body = raw_req[3],
         raw = raw_req
-      })
+      }, expose_errors)
       req_sock:send(reply.status or "404")
       req_sock:send(format_headers(reply.headers or {}))
       req_sock:send_binary(reply.body or "")

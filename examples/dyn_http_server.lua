@@ -12,45 +12,42 @@ local FAVICON = {
     </svg>]]
 }
 
-local function handle_req(method_path, headers, body)
-  local method, path, queries = pollnet.parse_method(method_path)
-  print("METHOD:", method)
-  print("PATH:", path)
-  print("QUERIES:", queries[1])
-  print("HEADERS:", headers)
-  print("BODY:", body)
-
-  headers = pollnet.parse_headers(headers)
-  print("----")
-  for k, v in pairs(headers) do
-    print(k, "->", v)
+local function tag(name)
+  return function(children)
+    return ("<%s>%s</%s>"):format(name, table.concat(children), name)
   end
-  if path == "/favicon.ico" then return FAVICON end
+end
+
+local counts = {}
+
+local handler = pollnet.wrap_req_handler(function(req)
+  print("METHOD:", req.method)
+  print("PATH:", req.path)
+  print("-- HEADERS --")
+  local header_items = {}
+  counts[req.path] = (counts[req.path] or 0) + 1
+  for k, v in pairs(req.headers) do
+    print(k, "->", v)
+    table.insert(header_items, tag"li"{k, ": ", v})
+  end
+  if req.path == "/favicon.ico" then return FAVICON end
+  local body = tag"html"{tag"body"{
+    tag"p"{req.method, " ", req.path},
+    tag"p"{"This path has been requested ", counts[req.path], " times"},
+    tag"ul"(header_items)
+  }}
   return {
     status = "200",
     headers = {
       ['Set-Cookie'] = {"session=1", "foobar=hello"}
     },
-    body = "Wow"
+    body = body
   }
-end
+end, true)
 
 local reactor = pollnet.Reactor()
 local HOST_ADDR = "0.0.0.0:8080"
-reactor:run_server(pollnet.serve_dynamic_http(HOST_ADDR, true), function(req_sock, addr)
-  print("New connection from:", addr)
-  while true do
-    local req = req_sock:await_n(3)
-    if not req then break end
-    print("Request from", addr)
-    local reply = handle_req(unpack(req))
-    req_sock:send(reply.status or "404")
-    req_sock:send(pollnet.format_headers(reply.headers or {}))
-    req_sock:send_binary(reply.body or "")
-  end
-  print("Connection", addr, "closed.")
-  req_sock:close()
-end)
+reactor:run_server(pollnet.serve_dynamic_http(HOST_ADDR, true), handler)
 
 print("Serving on", HOST_ADDR)
 
