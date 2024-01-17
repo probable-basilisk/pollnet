@@ -785,7 +785,7 @@ checksum = "69d3587f8a9e599cc7ec2c00e331f71c4e69a5f9a4b8a6efd5b07466b9736f9a"
 
 [[package]]
 name = "pollnet"
-version = "1.0.4"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
