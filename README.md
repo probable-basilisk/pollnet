@@ -6,52 +6,44 @@ within game-embedded LuaJIT environments (e.g., mods)
 * Websocket client and server (both ws:// and wss:// for clients)
 * TCP client and server
 * bare-bones HTTP client: simple GET/POST
-* bare-bones HTTP server: serve static files from disk or from memory
+* simple HTTP server: serve static files from disk or from memory
+* dynamic HTTP server: construct HTTP responses to requests
 
 # Usage (luajit FFI bindings)
 ```Lua
 -- pollnet.lua FFI loads pollnet.dll
-local pollnet = require("pollnet") 
+local pollnet = require("pollnet")
 
-local sock = pollnet.open_ws("wss://irc-ws.chat.twitch.tv:443")
--- special nick for anon read-only access on twitch
-sock:send("NICK justinfan" .. math.random(1, 100000))
-sock:send("JOIN #some_twitch_channel")
+-- Reactor is a convenience for running Lua coroutines
+local reactor = pollnet.Reactor()
 
--- assuming that you can run a callback each frame or on a timer
-each_game_tick(function()
-  if not sock then return end
-  local happy, msg = sock:poll()
-  if not happy then
-    sock:close() -- good form to avoid keeping sockets open
-    sock = nil
-    return
-  end
-  if msg == "PING :tmi.twitch.tv" then
-    sock:send("PONG :tmi.twitch.tv")
-  elseif msg then
-    print("CHAT: " .. msg) 
+reactor:run(function()
+  local sock = pollnet.open_ws("wss://irc-ws.chat.twitch.tv:443")
+  -- special nick for anon read-only access on twitch
+  sock:send("NICK justinfan" .. math.random(1, 100000))
+  sock:send("JOIN #some_twitch_channel")
+
+  while true do
+    print("CHAT: ", sock:await())
   end
 end)
 
--- HTTP requests work roughly the same way, except you
--- only get three messages back: status code, headers, and body
-local req_sock = pollnet.http_get("https://www.example.com")
-local part_order = {"STATUS CODE:", "HEADERS:", "BODY:"}
-local parts = {}
-each_game_tick(function()
-  if not req_sock then return end
-  local happy, msg = req_sock:poll()
-  if not happy then
-    req_sock:close() -- good form
-    req_sock = nil
-    return
-  end
-  if msg then
-    table.insert(parts, msg)
-    print(part_order[#parts], parts[#parts])
-  end
+reactor:run(function()
+  -- HTTP requests return three messages in order:
+  -- status code, headers, body
+  local req_sock = pollnet.http_get("https://www.example.com")
+  print("Status:", req_sock:await())
+  print("Headers:", req_sock:await())
+  print("Body:", req_sock:await())
 end)
+
+-- This part will be application specific:
+-- you need to call reactor:update() regularly (e.g., every frame)
+function on_frame()
+  reactor:update()
+end
+AppSpecifiAPI.setFrameCallback(on_frame)
+
 ```
 
 # FAQ
